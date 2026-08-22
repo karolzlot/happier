@@ -32,16 +32,16 @@ export async function readCredentialForRefresh(input: Readonly<{
   binding: BoundProfile;
 }>): Promise<ConnectedServiceCredentialSource | null> {
   const accountMode = await resolveConnectedServiceAccountMode(input.api);
-  if (accountMode !== 'e2ee' && typeof input.api.getConnectedServiceCredentialPlain === 'function') {
-    const plain = accountMode === 'unknown'
+  if (typeof input.api.getConnectedServiceCredentialPlain === 'function') {
+    const plain = accountMode === 'plain'
       ? await input.api.getConnectedServiceCredentialPlain({
           serviceId: input.binding.serviceId,
           profileId: input.binding.profileId,
-        }).catch(() => null)
+        })
       : await input.api.getConnectedServiceCredentialPlain({
           serviceId: input.binding.serviceId,
           profileId: input.binding.profileId,
-        });
+        }).catch(() => null);
     if (plain) {
       return {
         mode: 'plain',

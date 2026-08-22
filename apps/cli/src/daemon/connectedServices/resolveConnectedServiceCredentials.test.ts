@@ -208,6 +208,103 @@ describe('resolveConnectedServiceCredentials', () => {
     expect(api.getConnectedServiceCredentialSealed).not.toHaveBeenCalled();
   });
 
+  it('prefers a delegated v3 credential for an E2EE account', async () => {
+    const record = buildConnectedServiceCredentialRecord({
+      now: Date.now(),
+      serviceId: 'openai-codex',
+      profileId: 'company-primary',
+      kind: 'oauth',
+      oauth: {
+        accessToken: 'delegated-at',
+        refreshToken: 'delegated-rt',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'company-account',
+        providerEmail: 'company@example.com',
+      },
+    });
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'e2ee' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => ({
+        revisionSemantics: 'revisioned' as const,
+        credentialRevision: 'csr_delegatedcredential12',
+        content: { t: 'plain' as const, v: record },
+      })),
+      getConnectedServiceCredentialSealed: vi.fn(async () => null),
+    };
+
+    await expect(resolveConnectedServiceCredentialsWithRevisions({
+      credentials: { token: 't', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) } },
+      api: api as ConnectedServiceCredentialApi,
+      bindings: [{ serviceId: 'openai-codex', profileId: 'company-primary' }],
+    })).resolves.toEqual(new Map([['openai-codex', {
+      record,
+      revisionSemantics: 'revisioned',
+      credentialRevision: 'csr_delegatedcredential12',
+    }]]));
+
+    expect(api.getConnectedServiceCredentialPlain).toHaveBeenCalledWith({
+      serviceId: 'openai-codex',
+      profileId: 'company-primary',
+    });
+    expect(api.getConnectedServiceCredentialSealed).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a private v2 credential when an E2EE account has no delegated v3 resource', async () => {
+    const secret = new Uint8Array(32).fill(9);
+    const record = buildConnectedServiceCredentialRecord({
+      now: Date.now(),
+      serviceId: 'github',
+      profileId: 'private',
+      kind: 'oauth',
+      oauth: {
+        accessToken: 'private-at',
+        refreshToken: 'private-rt',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: null,
+        providerEmail: null,
+      },
+    });
+    const ciphertext = sealAccountScopedBlobCiphertext({
+      kind: 'connected_service_credential',
+      material: { type: 'legacy', secret },
+      payload: record,
+      randomBytes: (len) => new Uint8Array(len).fill(1),
+    });
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'e2ee' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => null),
+      getConnectedServiceCredentialSealed: vi.fn(async () => ({
+        revisionSemantics: 'revisioned' as const,
+        credentialRevision: 'csr_privatecredential1234',
+        sealed: { format: 'account_scoped_v1' as const, ciphertext },
+        metadata: { kind: 'oauth' as const },
+      })),
+    };
+
+    await expect(resolveConnectedServiceCredentialsWithRevisions({
+      credentials: { token: 't', encryption: { type: 'legacy', secret } },
+      api: api as ConnectedServiceCredentialApi,
+      bindings: [{ serviceId: 'github', profileId: 'private' }],
+    })).resolves.toEqual(new Map([['github', {
+      record,
+      revisionSemantics: 'revisioned',
+      credentialRevision: 'csr_privatecredential1234',
+    }]]));
+
+    expect(api.getConnectedServiceCredentialPlain).toHaveBeenCalledWith({
+      serviceId: 'github',
+      profileId: 'private',
+    });
+    expect(api.getConnectedServiceCredentialSealed).toHaveBeenCalledWith({
+      serviceId: 'github',
+      profileId: 'private',
+    });
+  });
+
   it('throws a structured missing-credential error with service/profile identity', async () => {
     const api = {
       getAccountEncryptionMode: vi.fn(async () => 'plain' as const),

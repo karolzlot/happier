@@ -8,6 +8,7 @@ import { ConnectedServiceIdSchema, type ConnectedServiceId } from "@happier-dev/
 import { ConnectedServiceProfileIdSchema } from "./profileIdSchema";
 import { NotFoundSchema } from "../../../schemas/notFoundSchema";
 import { resolveConnectedServiceCredentialRevision } from "../credentials/credentialRevision";
+import { resolveConnectedServiceProfileResourceScope } from "../sharedPools/sharedConnectedServicePoolAccess";
 
 function registerConnectedServiceRefreshLeaseRoute(
   app: Fastify,
@@ -39,7 +40,7 @@ function registerConnectedServiceRefreshLeaseRoute(
       },
     },
   }, async (request, reply) => {
-    const userId = request.userId;
+    const requesterAccountId = request.userId;
     const serviceId = request.params.serviceId satisfies ConnectedServiceId;
     const profileId = request.params.profileId;
     const { machineId } = request.body;
@@ -51,8 +52,21 @@ function registerConnectedServiceRefreshLeaseRoute(
     const nextExpiry = new Date(now + leaseMs);
 
     const result = await inTx(async (tx) => {
+      const scope = await resolveConnectedServiceProfileResourceScope({
+        client: tx,
+        requesterAccountId,
+        serviceId,
+        profileId,
+      });
+      if (!scope) return null;
       const row = await tx.serviceAccountToken.findUnique({
-        where: { accountId_vendor_profileId: { accountId: userId, vendor: serviceId, profileId } },
+        where: {
+          accountId_vendor_profileId: {
+            accountId: scope.resourceAccountId,
+            vendor: serviceId,
+            profileId,
+          },
+        },
         select: { id: true, metadata: true, refreshLeaseOwnerMachineId: true, refreshLeaseExpiresAt: true },
       });
       if (!row) return null;

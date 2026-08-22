@@ -1,8 +1,8 @@
 /**
  * Connected service credential resolver (client-side)
  *
- * Fetches sealed ciphertext from Happier Cloud and decrypts it locally using account-scoped crypto
- * material. The server never decrypts these payloads.
+ * Resolves a server-managed V3 credential when one is available, otherwise fetches sealed V2
+ * ciphertext and decrypts it locally using account-scoped crypto material.
  */
 
 import {
@@ -142,13 +142,13 @@ export async function resolveConnectedServiceCredentialsWithRevisions(params: Re
   const accountMode = await resolveConnectedServiceAccountMode(params.api);
 
   for (const binding of params.bindings) {
-    if (accountMode !== 'e2ee') {
-      const plain = accountMode === 'unknown'
-        ? await readPlainConnectedServiceCredentialBestEffort({
+    if (typeof params.api.getConnectedServiceCredentialPlain === 'function') {
+      const plain = accountMode === 'plain'
+        ? await readPlainConnectedServiceCredential({
             api: params.api,
             binding,
           })
-        : await readPlainConnectedServiceCredential({
+        : await readPlainConnectedServiceCredentialBestEffort({
             api: params.api,
             binding,
           });

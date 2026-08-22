@@ -39,6 +39,10 @@ import {
     mutateConnectedServiceCredentialHealth,
 } from "../credentials/mutation";
 import { resolveConnectedServiceCredentialRevision } from "../credentials/credentialRevision";
+import {
+    resolveConnectedServiceOwnerOnlyAccountId,
+    resolveConnectedServiceProfileResourceScope,
+} from "../sharedPools/sharedConnectedServicePoolAccess";
 
 const MAX_CREDENTIAL_JSON_CHARS = 220_000;
 
@@ -89,6 +93,7 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
                     z.object({ error: z.literal("invalid-params") }),
                     z.object({ error: z.literal(CONNECTED_SERVICE_ERROR_CODES.credentialInvalid) }),
                 ]),
+                404: z.union([NotFoundSchema, z.object({ error: z.literal("connect_credential_not_found") })]),
                 409: z.union([
                     z.object({ error: z.literal(CONNECTED_SERVICE_ERROR_CODES.reconnectProviderIdentityMismatch) }),
                     ConnectedServiceCredentialMutationSupersededV1Schema,
@@ -96,12 +101,30 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const userId = request.userId;
+        const requesterAccountId = request.userId;
         const serviceId = request.params.serviceId satisfies ConnectedServiceId;
         const profileId = request.params.profileId;
 
+        const scope = await resolveConnectedServiceProfileResourceScope({
+            requesterAccountId,
+            serviceId,
+            profileId,
+        });
+        if (!scope) return reply.code(404).send({ error: "connect_credential_not_found" });
+        if (
+            scope.kind === "shared"
+            && (
+                typeof request.body.expectedCredentialRevision !== "string"
+                || !request.body.refreshLeaseOwnerId
+                || request.body.reconnect?.allowProviderIdentityChange === true
+            )
+        ) {
+            return reply.code(404).send({ error: "connect_credential_not_found" });
+        }
+        const resourceAccountId = scope.resourceAccountId;
+
         const account = await db.account.findUnique({
-            where: { id: userId },
+            where: { id: resourceAccountId },
             select: { publicKey: true, encryptionMode: true },
         });
         if (!account) return reply.code(400).send({ error: "invalid-params" });
@@ -145,7 +168,7 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
         }
 
         const atRest = resolveAtRestStoragePolicy(process.env);
-        const keyPath = buildAtRestKeyPath({ accountId: userId, serviceId, profileId });
+        const keyPath = buildAtRestKeyPath({ accountId: resourceAccountId, serviceId, profileId });
         const tokenBytes = atRest === "server_sealed"
             ? (encryptString(keyPath, json) as Uint8Array<ArrayBuffer>)
             : encodeUtf8Bytes(json);
@@ -154,7 +177,7 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
         const expiresAt = typeof record.expiresAt === "number" && Number.isFinite(record.expiresAt) ? new Date(record.expiresAt) : null;
 
         const result = await mutateConnectedServiceCredential({
-            accountId: userId,
+            accountId: resourceAccountId,
             serviceId,
             profileId,
             token: tokenBytes,
@@ -162,7 +185,8 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
             expiresAt,
             storageMode: "plain",
             incomingIdentity,
-            allowProviderIdentityChange: request.body.reconnect?.allowProviderIdentityChange === true,
+            allowProviderIdentityChange: scope.kind === "owned"
+                && request.body.reconnect?.allowProviderIdentityChange === true,
             ...(request.body.expectedCredentialRevision !== undefined
                 ? { expectedCredentialRevision: request.body.expectedCredentialRevision }
                 : {}),
@@ -212,11 +236,17 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const userId = request.userId;
+        const requesterAccountId = request.userId;
         const serviceId = request.params.serviceId satisfies ConnectedServiceId;
         const profileId = request.params.profileId;
+        const scope = await resolveConnectedServiceProfileResourceScope({
+            requesterAccountId,
+            serviceId,
+            profileId,
+        });
+        if (!scope) return reply.code(404).send({ error: "connect_credential_not_found" });
         const result = await mutateConnectedServiceCredentialHealth({
-            accountId: userId,
+            accountId: scope.resourceAccountId,
             serviceId,
             profileId,
             health: request.body.health,
@@ -255,12 +285,20 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const userId = request.userId;
+        const requesterAccountId = request.userId;
         const serviceId = request.params.serviceId satisfies ConnectedServiceId;
         const profileId = request.params.profileId;
 
+        const scope = await resolveConnectedServiceProfileResourceScope({
+            requesterAccountId,
+            serviceId,
+            profileId,
+        });
+        if (!scope) return reply.code(404).send({ error: "connect_credential_not_found" });
+        const resourceAccountId = scope.resourceAccountId;
+
         const account = await db.account.findUnique({
-            where: { id: userId },
+            where: { id: resourceAccountId },
             select: { publicKey: true, encryptionMode: true },
         });
         if (!account) return reply.code(404).send({ error: "connect_credential_not_found" });
@@ -271,7 +309,7 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
         }
 
         const row = await db.serviceAccountToken.findUnique({
-            where: { accountId_vendor_profileId: { accountId: userId, vendor: serviceId, profileId } },
+            where: { accountId_vendor_profileId: { accountId: resourceAccountId, vendor: serviceId, profileId } },
             select: { id: true, token: true, metadata: true },
         });
         if (!row) return reply.code(404).send({ error: "connect_credential_not_found" });
@@ -280,7 +318,7 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
             return reply.code(409).send({ error: "connect_credential_unsupported_format" });
         }
 
-        const keyPath = buildAtRestKeyPath({ accountId: userId, serviceId, profileId });
+        const keyPath = buildAtRestKeyPath({ accountId: resourceAccountId, serviceId, profileId });
         const json = row.metadata.storage === "server_sealed_json_v1"
             ? decryptString(keyPath, row.token as any)
             : decodeUtf8String(row.token);
@@ -329,13 +367,20 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const userId = request.userId;
+        const requesterAccountId = request.userId;
         const serviceId = request.params.serviceId satisfies ConnectedServiceId;
         const profileId = request.params.profileId;
+        const resourceAccountId = resolveConnectedServiceOwnerOnlyAccountId({
+            requesterAccountId,
+            serviceId,
+        });
+        if (!resourceAccountId) {
+            return reply.code(404).send({ error: "connect_credential_not_found" });
+        }
 
         const result = await inTx(async (tx) => {
             const deleteResult = await deleteConnectedServiceCredentialInTx(tx, {
-                accountId: userId,
+                accountId: resourceAccountId,
                 serviceId,
                 profileId,
                 storageMode: "plain",
@@ -346,7 +391,7 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
                     || !isServerFeatureEnabledForRequest("connectedServices.accountGroups", process.env),
             });
             if (deleteResult === "deleted") {
-                await recordConnectedServiceAccountProfileChange(tx, { accountId: userId });
+                await recordConnectedServiceAccountProfileChange(tx, { accountId: resourceAccountId });
             }
             return deleteResult;
         });
