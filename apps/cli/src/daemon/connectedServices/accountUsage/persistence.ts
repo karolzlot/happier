@@ -31,6 +31,10 @@ export type ProviderAccountUsagePersistenceMetadata = Readonly<{
 
 export type ProviderAccountUsageApi = Readonly<{
   getAccountEncryptionMode: () => Promise<'plain' | 'e2ee' | 'unknown'>;
+  getConnectedServiceCredentialPlain?: (args: Readonly<{
+    serviceId: ConnectedServiceUsageSourceV1['serviceId'];
+    profileId: string;
+  }>) => Promise<unknown | null>;
   registerProviderAccountUsageSnapshotPlain?: (args: Readonly<{
     recordId: ProviderAccountUsageRecordId;
     source?: ConnectedServiceUsageSourceV1;
@@ -182,7 +186,21 @@ export function createProviderAccountUsagePersistenceScheduler(params: Readonly<
       materialFingerprint: payload.materialFingerprint,
     };
 
-    if (accountMode === 'plain' && params.api.registerProviderAccountUsageSnapshotPlain) {
+    let usePlainPersistence = accountMode === 'plain';
+    if (
+      accountMode === 'e2ee'
+      && payload.source
+      && params.api.registerProviderAccountUsageSnapshotPlain
+      && params.api.getConnectedServiceCredentialPlain
+    ) {
+      const authorizedPlainCredential = await params.api.getConnectedServiceCredentialPlain({
+        serviceId: payload.source.serviceId,
+        profileId: payload.source.profileId,
+      }).catch(() => null);
+      usePlainPersistence = authorizedPlainCredential !== null;
+    }
+
+    if (usePlainPersistence && params.api.registerProviderAccountUsageSnapshotPlain) {
       await params.api.registerProviderAccountUsageSnapshotPlain({
         recordId: payload.recordId,
         ...(payload.source ? { source: payload.source } : {}),

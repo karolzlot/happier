@@ -23,6 +23,7 @@ import type {
 export async function writeProviderAccountUsageRecordAndLinkConnectedServiceUsageSource(
     params: ProviderAccountUsageWritePolicyParams & Readonly<{
         source: ConnectedServiceUsageSourceV1;
+        requireSourceLink?: boolean;
     }>,
 ): Promise<Readonly<{
     record: StoredProviderAccountUsageRecord;
@@ -60,9 +61,11 @@ export async function writeProviderAccountUsageRecordAndLinkConnectedServiceUsag
             sourceOutcome = { status: "linked" };
         } catch (error) {
             if (error instanceof ConnectedServiceUsageSourceBindingError && error.kind === "unavailable") {
+                if (params.requireSourceLink) throw error;
                 source = null;
                 sourceOutcome = { status: "skipped", reason: "binding_unavailable" };
             } else if (error instanceof ConnectedServiceUsageSourceOwnershipError && error.kind === "unproven") {
+                if (params.requireSourceLink) throw error;
                 source = null;
                 sourceOutcome = { status: "skipped", reason: "ownership_unproven" };
             } else {

@@ -1,4 +1,7 @@
-import type { ConnectedServiceId } from "@happier-dev/protocol";
+import type {
+    ConnectedServiceId,
+    ConnectedServiceUsageSourceV1,
+} from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 import type { Tx } from "@/storage/inTx";
@@ -111,4 +114,27 @@ export async function resolveConnectedServiceProfileResourceScope(params: Readon
         select: { id: true },
     });
     return member ? scope : null;
+}
+
+export async function resolveConnectedServiceUsageSourceResourceScope(params: Readonly<{
+    client?: SharedConnectedServicePoolAccessClient;
+    env?: NodeJS.ProcessEnv;
+    requesterAccountId: string;
+    source: ConnectedServiceUsageSourceV1;
+}>): Promise<ConnectedServiceResourceScope | null> {
+    const scope = await resolveConnectedServiceProfileResourceScope({
+        client: params.client,
+        env: params.env,
+        requesterAccountId: params.requesterAccountId,
+        serviceId: params.source.serviceId,
+        profileId: params.source.profileId,
+    });
+    if (
+        scope?.kind === "shared"
+        && params.source.bindingKind === "group_member"
+        && params.source.groupId !== scope.groupId
+    ) {
+        return null;
+    }
+    return scope;
 }

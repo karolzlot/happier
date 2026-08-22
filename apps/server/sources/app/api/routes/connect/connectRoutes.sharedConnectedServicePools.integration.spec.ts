@@ -24,6 +24,11 @@ import {
     DEFAULT_CONNECTED_SERVICE_AUTH_GROUP_POLICY_V1,
     stringifyConnectedServiceAuthGroupPolicy,
 } from "./connectedServicesV3/authGroupPolicy";
+import {
+    createProviderAccountUsageRecordKey,
+    createUsageSnapshot,
+    createV3ProviderAccountUsagePayload,
+} from "./providerAccountUsageTestkit";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
@@ -61,6 +66,7 @@ async function createConnectedProfile(params: Readonly<{
     serviceId: string;
     profileId: string;
     credentialRevision: string;
+    providerAccountId?: string;
 }>) {
     return db.serviceAccountToken.create({
         data: {
@@ -73,6 +79,7 @@ async function createConnectedProfile(params: Readonly<{
                 format: "account_scoped_v1",
                 kind: "oauth",
                 credentialRevision: params.credentialRevision,
+                ...(params.providerAccountId ? { providerAccountId: params.providerAccountId } : {}),
             },
         },
     });
@@ -802,5 +809,250 @@ describe("shared connected service pool delegation (integration)", () => {
             expect(JSON.stringify(emitted)).not.toContain("owner-private");
         }
         expect(emitUpdate.mock.calls.some(([event]) => event.userId === unrelated.id)).toBe(false);
+    });
+
+    it("keeps provider usage and quota rows owner-owned and authorizes them through granted sources", async () => {
+        const owner = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const employee = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const operator = await db.account.create({
+            data: { publicKey: "pk-quota-e2ee-operator", encryptionMode: "e2ee" },
+            select: { id: true },
+        });
+        const unrelated = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const providerAccountId = "company-provider-account";
+        await createConnectedProfile({
+            accountId: owner.id,
+            serviceId: "openai-codex",
+            profileId: "company-primary",
+            credentialRevision: "csr_B123456789ABCDEFGHJKMNPQRS",
+            providerAccountId,
+        });
+        await createConnectedProfile({
+            accountId: owner.id,
+            serviceId: "openai-codex",
+            profileId: "owner-private",
+            credentialRevision: "csr_C123456789ABCDEFGHJKMNPQRS",
+            providerAccountId,
+        });
+        await createGroup({
+            accountId: owner.id,
+            serviceId: "openai-codex",
+            groupId: "company-codex",
+            profileIds: ["company-primary"],
+        });
+
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: "plain",
+            HAPPIER_SHARED_CONNECTED_SERVICE_POOLS_JSON: JSON.stringify([{
+                ownerAccountId: owner.id,
+                serviceId: "openai-codex",
+                groupId: "company-codex",
+                granteeAccountIds: [employee.id, operator.id],
+            }]),
+        });
+        const app = await createReadyApp();
+        const recordKey = createProviderAccountUsageRecordKey({ accountSubjectId: providerAccountId });
+        const snapshot = createUsageSnapshot({
+            fetchedAt: Date.now(),
+            recordKey,
+            profileId: "company-primary",
+            planLabel: "company-plan",
+        });
+
+        const delegatedWrite = await app.inject({
+            method: "POST",
+            url: `/v3/connect/provider-account-usage/${snapshot.recordId}`,
+            headers: authHeaders(operator.id),
+            payload: {
+                ...createV3ProviderAccountUsagePayload({ snapshot, fingerprint: "shared-usage-a" }),
+                source: {
+                    serviceId: "openai-codex",
+                    profileId: "company-primary",
+                    bindingKind: "profile",
+                },
+            },
+        });
+        expect(delegatedWrite.statusCode).toBe(200);
+
+        const unprovableRecordKey = createProviderAccountUsageRecordKey({
+            accountSubjectId: providerAccountId,
+            subjectKind: "organization",
+            quotaScope: "organization",
+        });
+        const unprovableSnapshot = createUsageSnapshot({
+            fetchedAt: snapshot.fetchedAtMs + 1,
+            recordKey: unprovableRecordKey,
+            profileId: "company-primary",
+            planLabel: "unprovable-plan",
+        });
+        const unprovableDelegatedWrite = await app.inject({
+            method: "POST",
+            url: `/v3/connect/provider-account-usage/${unprovableSnapshot.recordId}`,
+            headers: authHeaders(operator.id),
+            payload: {
+                ...createV3ProviderAccountUsagePayload({ snapshot: unprovableSnapshot, fingerprint: "unprovable-usage" }),
+                source: {
+                    serviceId: "openai-codex",
+                    profileId: "company-primary",
+                    bindingKind: "profile",
+                },
+            },
+        });
+        expect(unprovableDelegatedWrite.statusCode, unprovableDelegatedWrite.body).toBe(400);
+        expect(await db.providerAccountUsageRecord.findUnique({
+            where: {
+                accountId_recordId: {
+                    accountId: owner.id,
+                    recordId: unprovableSnapshot.recordId,
+                },
+            },
+        })).toBeNull();
+
+        const privateSnapshot = createUsageSnapshot({
+            fetchedAt: snapshot.fetchedAtMs + 1,
+            recordKey,
+            profileId: "owner-private",
+            planLabel: "company-plan",
+        });
+        const ownerPrivateWrite = await app.inject({
+            method: "POST",
+            url: `/v3/connect/provider-account-usage/${privateSnapshot.recordId}`,
+            headers: authHeaders(owner.id),
+            payload: {
+                ...createV3ProviderAccountUsagePayload({ snapshot: privateSnapshot, fingerprint: "shared-usage-b" }),
+                source: {
+                    serviceId: "openai-codex",
+                    profileId: "owner-private",
+                    bindingKind: "profile",
+                },
+            },
+        });
+        expect(ownerPrivateWrite.statusCode).toBe(200);
+
+        for (const granteeAccountId of [employee.id, operator.id]) {
+            const quota = await app.inject({
+                method: "GET",
+                url: "/v3/connect/openai-codex/profiles/company-primary/quotas",
+                headers: authHeaders(granteeAccountId),
+            });
+            expect(quota.statusCode).toBe(200);
+            expect(quota.json()).toEqual(expect.objectContaining({
+                content: {
+                    t: "plain",
+                    v: expect.objectContaining({
+                        serviceId: "openai-codex",
+                        profileId: "company-primary",
+                        planLabel: "company-plan",
+                    }),
+                },
+            }));
+        }
+
+        const sourceResolution = await app.inject({
+            method: "GET",
+            url: "/v3/connect/provider-account-usage/sources/resolve?serviceId=openai-codex&profileId=company-primary&bindingKind=profile",
+            headers: authHeaders(employee.id),
+        });
+        expect(sourceResolution.statusCode).toBe(200);
+        expect(sourceResolution.json()).toEqual(expect.objectContaining({
+            recordId: snapshot.recordId,
+            providerAccountId,
+            source: {
+                serviceId: "openai-codex",
+                profileId: "company-primary",
+                bindingKind: "profile",
+            },
+        }));
+
+        const usage = await app.inject({
+            method: "GET",
+            url: `/v3/connect/provider-account-usage/${snapshot.recordId}`,
+            headers: authHeaders(employee.id),
+        });
+        expect(usage.statusCode).toBe(200);
+        expect(usage.json()).toEqual(expect.objectContaining({
+            content: { t: "plain", v: expect.objectContaining({ recordId: snapshot.recordId }) },
+            sources: [{
+                serviceId: "openai-codex",
+                profileId: "company-primary",
+                bindingKind: "profile",
+            }],
+        }));
+        expect(JSON.stringify(usage.json())).not.toContain("owner-private");
+
+        const refresh = await app.inject({
+            method: "POST",
+            url: "/v3/connect/openai-codex/profiles/company-primary/quotas/refresh",
+            headers: { "x-test-user-id": employee.id },
+        });
+        expect(refresh.statusCode).toBe(200);
+
+        const unrelatedQuota = await app.inject({
+            method: "GET",
+            url: "/v3/connect/openai-codex/profiles/company-primary/quotas",
+            headers: authHeaders(unrelated.id),
+        });
+        expect(unrelatedQuota.statusCode).toBe(404);
+        const unrelatedUsage = await app.inject({
+            method: "GET",
+            url: `/v3/connect/provider-account-usage/${snapshot.recordId}`,
+            headers: authHeaders(unrelated.id),
+        });
+        expect(unrelatedUsage.statusCode).toBe(404);
+
+        const outOfScopeWrite = await app.inject({
+            method: "POST",
+            url: `/v3/connect/provider-account-usage/${snapshot.recordId}`,
+            headers: authHeaders(employee.id),
+            payload: {
+                ...createV3ProviderAccountUsagePayload({ snapshot, fingerprint: "forbidden-source" }),
+                source: {
+                    serviceId: "openai-codex",
+                    profileId: "owner-private",
+                    bindingKind: "profile",
+                },
+            },
+        });
+        expect(outOfScopeWrite.statusCode).toBe(400);
+
+        const delegatedQuotaDelete = await app.inject({
+            method: "DELETE",
+            url: "/v3/connect/openai-codex/profiles/company-primary/quotas",
+            headers: { "x-test-user-id": employee.id },
+        });
+        expect(delegatedQuotaDelete.statusCode).toBe(404);
+        const delegatedUsageDelete = await app.inject({
+            method: "DELETE",
+            url: `/v3/connect/provider-account-usage/${snapshot.recordId}`,
+            headers: { "x-test-user-id": employee.id },
+        });
+        expect(delegatedUsageDelete.statusCode).toBe(404);
+
+        const records = await db.providerAccountUsageRecord.findMany({
+            select: { accountId: true, recordId: true, refreshRequestedAt: true },
+        });
+        expect(records).toEqual([expect.objectContaining({
+            accountId: owner.id,
+            recordId: snapshot.recordId,
+            refreshRequestedAt: expect.any(Date),
+        })]);
+        const sources = await db.connectedServiceUsageSource.findMany({
+            select: { accountId: true, profileId: true },
+            orderBy: { profileId: "asc" },
+        });
+        expect(sources).toEqual([
+            { accountId: owner.id, profileId: "company-primary" },
+            { accountId: owner.id, profileId: "owner-private" },
+        ]);
     });
 });

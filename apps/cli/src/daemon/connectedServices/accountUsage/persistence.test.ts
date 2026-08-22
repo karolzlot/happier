@@ -10,6 +10,10 @@ import type { Credentials } from '@/persistence';
 
 type AccountUsageApi = Readonly<{
   getAccountEncryptionMode: () => Promise<'plain' | 'e2ee' | 'unknown'>;
+  getConnectedServiceCredentialPlain?: (args: Readonly<{
+    serviceId: ConnectedServiceUsageSourceV1['serviceId'];
+    profileId: string;
+  }>) => Promise<unknown | null>;
   registerProviderAccountUsageSnapshotPlain?: (args: Readonly<{
     recordId: string;
     source?: ConnectedServiceUsageSourceV1;
@@ -321,6 +325,7 @@ describe('provider account usage persistence', () => {
     const snapshot = createSnapshot();
     const api = {
       getAccountEncryptionMode: vi.fn(async () => 'e2ee' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => null),
       registerProviderAccountUsageSnapshotPlain: vi.fn(async () => {}),
       registerProviderAccountUsageSnapshotSealed: vi.fn(async () => {}),
     };
@@ -351,5 +356,51 @@ describe('provider account usage persistence', () => {
         bindingKind: 'profile',
       },
     }));
+    expect(api.getConnectedServiceCredentialPlain).toHaveBeenCalledWith({
+      serviceId: 'openai-codex',
+      profileId: 'work',
+    });
+    expect(api.registerProviderAccountUsageSnapshotPlain).not.toHaveBeenCalled();
+  });
+
+  it('persists a delegated plaintext source from an e2ee account only after an authorized V3 credential probe', async () => {
+    const module = await loadPersistenceModule();
+    expect(module).not.toBeNull();
+    const snapshot = createSnapshot();
+    const source: ConnectedServiceUsageSourceV1 = {
+      serviceId: 'openai-codex',
+      profileId: 'company-codex',
+      bindingKind: 'profile',
+    };
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'e2ee' as const),
+      getConnectedServiceCredentialPlain: vi.fn(async () => ({
+        content: { t: 'plain' as const, v: { serviceId: source.serviceId, profileId: source.profileId } },
+      })),
+      registerProviderAccountUsageSnapshotPlain: vi.fn(async () => {}),
+      registerProviderAccountUsageSnapshotSealed: vi.fn(async () => {}),
+    };
+    const scheduler = module!.createProviderAccountUsagePersistenceScheduler({
+      api,
+      now: () => 1_000,
+      credentials: createCredentials(),
+      randomBytes: (length) => new Uint8Array(length).fill(4),
+      minFreshnessMs: 0,
+    });
+
+    await scheduler.recordInBandSnapshot(snapshot, { source });
+    await scheduler.flush(1_000);
+    scheduler.dispose();
+
+    expect(api.getConnectedServiceCredentialPlain).toHaveBeenCalledWith({
+      serviceId: 'openai-codex',
+      profileId: 'company-codex',
+    });
+    expect(api.registerProviderAccountUsageSnapshotPlain).toHaveBeenCalledWith(expect.objectContaining({
+      recordId: snapshot.recordId,
+      source,
+      content: { t: 'plain', v: snapshot },
+    }));
+    expect(api.registerProviderAccountUsageSnapshotSealed).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,10 @@ import {
     readConnectedServiceQuotaView,
     requestConnectedServiceQuotaRefresh,
 } from "../providerAccountUsage";
+import {
+    resolveConnectedServiceOwnerOnlyAccountId,
+    resolveConnectedServiceProfileResourceScope,
+} from "../sharedPools/sharedConnectedServicePoolAccess";
 
 async function readPlainAccount(accountId: string) {
     const account = await db.account.findUnique({
@@ -52,14 +56,22 @@ export function registerConnectedServiceQuotaRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const userId = request.userId;
+        const requesterAccountId = request.userId;
         const serviceId = request.params.serviceId satisfies ConnectedServiceId;
         const profileId = request.params.profileId;
 
-        const account = await readPlainAccount(userId);
+        const scope = await resolveConnectedServiceProfileResourceScope({
+            requesterAccountId,
+            serviceId,
+            profileId,
+        });
+        if (!scope) return reply.code(404).send({ error: "connect_quotas_not_found" });
+        const resourceAccountId = scope.resourceAccountId;
+
+        const account = await readPlainAccount(resourceAccountId);
         if (!account) return reply.code(404).send({ error: "connect_quotas_not_found" });
 
-        const view = await readConnectedServiceQuotaView({ accountId: userId, serviceId, profileId });
+        const view = await readConnectedServiceQuotaView({ accountId: resourceAccountId, serviceId, profileId });
         if (!view) return reply.code(404).send({ error: "connect_quotas_not_found" });
 
         return reply.send({
@@ -82,14 +94,22 @@ export function registerConnectedServiceQuotaRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const userId = request.userId;
+        const requesterAccountId = request.userId;
         const serviceId = request.params.serviceId satisfies ConnectedServiceId;
         const profileId = request.params.profileId;
 
-        const account = await readPlainAccount(userId);
+        const scope = await resolveConnectedServiceProfileResourceScope({
+            requesterAccountId,
+            serviceId,
+            profileId,
+        });
+        if (!scope) return reply.code(404).send({ error: "connect_quotas_not_found" });
+        const resourceAccountId = scope.resourceAccountId;
+
+        const account = await readPlainAccount(resourceAccountId);
         if (!account) return reply.code(404).send({ error: "connect_quotas_not_found" });
 
-        const result = await requestConnectedServiceQuotaRefresh({ accountId: userId, serviceId, profileId });
+        const result = await requestConnectedServiceQuotaRefresh({ accountId: resourceAccountId, serviceId, profileId });
         if (result === "not_found") {
             return reply.code(404).send({ error: "connect_quotas_not_found" });
         }
@@ -110,15 +130,21 @@ export function registerConnectedServiceQuotaRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const userId = request.userId;
+        const requesterAccountId = request.userId;
         const serviceId = request.params.serviceId satisfies ConnectedServiceId;
         const profileId = request.params.profileId;
 
-        const account = await readPlainAccount(userId);
+        const resourceAccountId = resolveConnectedServiceOwnerOnlyAccountId({
+            requesterAccountId,
+            serviceId,
+        });
+        if (!resourceAccountId) return reply.code(404).send({ error: "connect_quotas_not_found" });
+
+        const account = await readPlainAccount(resourceAccountId);
         if (!account) return reply.code(404).send({ error: "connect_quotas_not_found" });
 
         const { unlinkConnectedServiceUsageSource } = await import("../providerAccountUsage");
-        const result = await unlinkConnectedServiceUsageSource({ accountId: userId, serviceId, profileId });
+        const result = await unlinkConnectedServiceUsageSource({ accountId: resourceAccountId, serviceId, profileId });
         if (result === "not_found") {
             return reply.code(404).send({ error: "connect_quotas_not_found" });
         }

@@ -2952,7 +2952,7 @@ export class ConnectedServiceQuotasCoordinator {
                 groupId,
                 profileId,
                 groupGeneration: group?.generation ?? null,
-                snapshot: observedSnapshot,
+                snapshot: observedSnapshot.snapshot,
               });
               if (deadlineExceeded()) {
                 outcome = result('incomplete', 'deadline_exceeded');
@@ -2961,10 +2961,10 @@ export class ConnectedServiceQuotasCoordinator {
               await this.recordFetchedQuotaSnapshotAsAccountUsage({
                 serviceId,
                 profileId,
-                accountMode: accountMode === 'plain' || accountMode === 'e2ee' ? accountMode : null,
+                accountMode: observedSnapshot.storageMode,
                 groupId,
                 groupContexts: this.buildQuotaGroupContextsForProfile({ group, profileId }),
-                snapshot: observedSnapshot,
+                snapshot: observedSnapshot.snapshot,
                 now,
               });
               if (deadlineExceeded()) {
@@ -3148,12 +3148,13 @@ export class ConnectedServiceQuotasCoordinator {
     profileId: string;
     signal?: AbortSignal;
   }>): Promise<ResolvedExistingQuotaSnapshot> {
-    if (input.accountMode !== 'e2ee' && typeof this.api.getConnectedServiceQuotaSnapshotPlain === 'function') {
-      const plain = await this.api.getConnectedServiceQuotaSnapshotPlain({
+    if (typeof this.api.getConnectedServiceQuotaSnapshotPlain === 'function') {
+      const readPlain = this.api.getConnectedServiceQuotaSnapshotPlain({
         serviceId: input.serviceId,
         profileId: input.profileId,
         signal: input.signal,
       });
+      const plain = input.accountMode === 'e2ee' ? await readPlain.catch(() => null) : await readPlain;
       if (plain) {
         return { storageMode: 'plain', existing: plain };
       }
@@ -3183,7 +3184,7 @@ export class ConnectedServiceQuotasCoordinator {
     record: ConnectedServiceCredentialRecordV1 | null;
     credentialRevision: ConnectedServiceCredentialRevisionV1 | null;
   }>> {
-    if (input.accountMode !== 'e2ee' && typeof this.api.getConnectedServiceCredentialPlain === 'function') {
+    if (typeof this.api.getConnectedServiceCredentialPlain === 'function') {
       const plain = await this.api.getConnectedServiceCredentialPlain({
         serviceId: input.serviceId,
         profileId: input.profileId,
@@ -3284,7 +3285,10 @@ export class ConnectedServiceQuotasCoordinator {
     now: number;
     leaseUntil: number;
     signal?: AbortSignal;
-  }>): Promise<ConnectedServiceQuotaSnapshotV1 | null> {
+  }>): Promise<Readonly<{
+    snapshot: ConnectedServiceQuotaSnapshotV1;
+    storageMode: ResolvedQuotaStorageMode;
+  }> | null> {
     const maxWaitMs = this.quotaFetchLeaseContentionWaitMaxMs;
     if (maxWaitMs > 0) {
       const waitMs = Math.min(maxWaitMs, Math.max(0, Math.trunc(input.leaseUntil - input.now)));
@@ -3314,13 +3318,14 @@ export class ConnectedServiceQuotasCoordinator {
       return null;
     }
     if (!observed) return null;
-    return this.openExistingQuotaSnapshot({
+    const snapshot = this.openExistingQuotaSnapshot({
       storageMode: observed.storageMode,
       material: input.material,
       serviceId: input.serviceId,
       profileId: input.profileId,
       existing: observed.existing,
     });
+    return snapshot ? { snapshot, storageMode: observed.storageMode } : null;
   }
 
   private async runFetcherWithTimeout(input: Readonly<{
@@ -3974,13 +3979,13 @@ export class ConnectedServiceQuotasCoordinator {
               leaseUntil: lease.leaseUntil,
             });
             if (observedSnapshot) {
-              this.recordRuntimeProfileSnapshot({ serviceId, profileId, snapshot: observedSnapshot });
+              this.recordRuntimeProfileSnapshot({ serviceId, profileId, snapshot: observedSnapshot.snapshot });
               await this.recordFetchedQuotaSnapshotAsAccountUsage({
                 serviceId,
                 profileId,
-                snapshot: observedSnapshot,
+                snapshot: observedSnapshot.snapshot,
                 now,
-                accountMode,
+                accountMode: observedSnapshot.storageMode,
                 groupContexts,
                 groupTargets: directGroupTargets,
               });

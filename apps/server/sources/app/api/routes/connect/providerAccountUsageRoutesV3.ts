@@ -12,6 +12,7 @@ import {
     ProviderAccountUsageRecordIdSchema,
     ProviderAccountUsageSnapshotV1Schema,
     StoredJsonContentEnvelopeSchema,
+    type ConnectedServiceUsageSourceV1,
 } from "@happier-dev/protocol";
 import { NotFoundSchema } from "../../schemas/notFoundSchema";
 import {
@@ -33,6 +34,12 @@ import {
 } from "./providerAccountUsage";
 import { ProviderAccountUsagePayloadInvariantError } from "./providerAccountUsage";
 import { writeProviderAccountUsageRecordWithPolicy } from "./providerAccountUsage/routeWritePolicy";
+import {
+    listSharedConnectedServicePoolGrantsForGrantee,
+} from "./sharedPools/sharedConnectedServicePoolConfig";
+import {
+    resolveConnectedServiceUsageSourceResourceScope,
+} from "./sharedPools/sharedConnectedServicePoolAccess";
 
 function providerAccountUsageWriteMetadataMatchesSnapshotClock(
     metadata: Readonly<{ fetchedAt: number; staleAfterMs: number }>,
@@ -86,6 +93,50 @@ async function readPlainAccount(accountId: string) {
     return account && resolveEffectiveAccountEncryptionModeFromAccountRow(account) === "plain" ? account : null;
 }
 
+type ProviderAccountUsageResourceAccess = Readonly<{
+    kind: "owned" | "shared";
+    resourceAccountId: string;
+    allowedSources: readonly ConnectedServiceUsageSourceV1[] | null;
+}>;
+
+async function resolveProviderAccountUsageResourceAccess(params: Readonly<{
+    requesterAccountId: string;
+    recordId: string;
+}>): Promise<ProviderAccountUsageResourceAccess> {
+    const grants = listSharedConnectedServicePoolGrantsForGrantee({
+        requesterAccountId: params.requesterAccountId,
+    });
+    for (const grant of grants) {
+        const sources = await listConnectedServiceUsageSourcesForProviderAccountUsageRecord({
+            accountId: grant.ownerAccountId,
+            providerAccountUsageRecordId: params.recordId,
+        });
+        const allowedSources: ConnectedServiceUsageSourceV1[] = [];
+        for (const storedSource of sources) {
+            const source = toConnectedServiceUsageSourceV1(storedSource);
+            const scope = await resolveConnectedServiceUsageSourceResourceScope({
+                requesterAccountId: params.requesterAccountId,
+                source,
+            });
+            if (scope?.kind === "shared" && scope.resourceAccountId === grant.ownerAccountId) {
+                allowedSources.push(source);
+            }
+        }
+        if (allowedSources.length > 0) {
+            return {
+                kind: "shared",
+                resourceAccountId: grant.ownerAccountId,
+                allowedSources,
+            };
+        }
+    }
+    return {
+        kind: "owned",
+        resourceAccountId: params.requesterAccountId,
+        allowedSources: null,
+    };
+}
+
 export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
     app.get("/v3/connect/provider-account-usage/sources/resolve", {
         config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "connectedServices.quotas.read") },
@@ -104,8 +155,15 @@ export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
+        const scope = await resolveConnectedServiceUsageSourceResourceScope({
+            requesterAccountId: request.userId,
+            source: request.query,
+        });
+        if (!scope) {
+            return reply.code(404).send({ error: "provider_account_usage_source_not_found" });
+        }
         const resolved = await readExactConnectedServiceUsageSource({
-            accountId: request.userId,
+            accountId: scope.resourceAccountId,
             source: request.query,
         });
         if (!resolved) {
@@ -135,7 +193,17 @@ export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const account = await readPlainAccount(request.userId);
+        const sourceScope = request.body.source
+            ? await resolveConnectedServiceUsageSourceResourceScope({
+                requesterAccountId: request.userId,
+                source: request.body.source,
+            })
+            : null;
+        if (request.body.source && !sourceScope) {
+            return sendProviderAccountUsageInvalidParams(reply, "connected_service_usage_source_invalid");
+        }
+        const resourceAccountId = sourceScope?.resourceAccountId ?? request.userId;
+        const account = await readPlainAccount(resourceAccountId);
         if (!account || request.body.content.t !== "plain") {
             return sendProviderAccountUsageInvalidParams(reply, "provider_account_usage_plaintext_required");
         }
@@ -153,7 +221,7 @@ export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
 
         try {
             const writeParams = {
-                accountId: request.userId,
+                accountId: resourceAccountId,
                 recordId: parsed.data.recordId,
                 recordKey: parsed.data.recordKey,
                 payloadMode: "plain_json_v1" as const,
@@ -168,6 +236,7 @@ export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
                 const result = await writeProviderAccountUsageRecordAndLinkConnectedServiceUsageSource({
                     ...writeParams,
                     source: request.body.source,
+                    requireSourceLink: sourceScope?.kind === "shared",
                 });
                 sourceOutcome = result.sourceOutcome;
             } else {
@@ -211,20 +280,28 @@ export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const account = await readPlainAccount(request.userId);
+        const access = await resolveProviderAccountUsageResourceAccess({
+            requesterAccountId: request.userId,
+            recordId: request.params.recordId,
+        });
+        const account = await readPlainAccount(access.resourceAccountId);
         if (!account) return reply.code(404).send({ error: "provider_account_usage_not_found" });
 
         const record = await readProviderAccountUsageRecord({
-            accountId: request.userId,
+            accountId: access.resourceAccountId,
             recordId: request.params.recordId,
         });
         if (!record?.snapshot || record.payloadMode !== "plain_json_v1") {
             return reply.code(404).send({ error: "provider_account_usage_not_found" });
         }
-        const sources = await listConnectedServiceUsageSourcesForProviderAccountUsageRecord({
-            accountId: request.userId,
-            providerAccountUsageRecordId: record.recordId,
-        });
+        const sources = access.allowedSources
+            ? [...access.allowedSources]
+            : (
+                await listConnectedServiceUsageSourcesForProviderAccountUsageRecord({
+                    accountId: access.resourceAccountId,
+                    providerAccountUsageRecordId: record.recordId,
+                })
+            ).map(toConnectedServiceUsageSourceV1);
 
         return reply.send({
             content: { t: "plain", v: record.snapshot },
@@ -234,7 +311,7 @@ export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
                 status: normalizeResponseStatus(record.status),
                 ...(record.refreshRequestedAt !== undefined ? { refreshRequestedAt: record.refreshRequestedAt } : {}),
             },
-            sources: sources.map(toConnectedServiceUsageSourceV1),
+            sources,
         });
     });
 
@@ -249,11 +326,15 @@ export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const account = await readPlainAccount(request.userId);
+        const access = await resolveProviderAccountUsageResourceAccess({
+            requesterAccountId: request.userId,
+            recordId: request.params.recordId,
+        });
+        const account = await readPlainAccount(access.resourceAccountId);
         if (!account) return reply.code(404).send({ error: "provider_account_usage_not_found" });
 
         const refreshResult = await requestProviderAccountUsageRefresh({
-            accountId: request.userId,
+            accountId: access.resourceAccountId,
             recordId: request.params.recordId,
         });
         if (refreshResult === "not_found") {
@@ -273,11 +354,18 @@ export function registerProviderAccountUsageRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const account = await readPlainAccount(request.userId);
+        const access = await resolveProviderAccountUsageResourceAccess({
+            requesterAccountId: request.userId,
+            recordId: request.params.recordId,
+        });
+        if (access.kind === "shared") {
+            return reply.code(404).send({ error: "provider_account_usage_not_found" });
+        }
+        const account = await readPlainAccount(access.resourceAccountId);
         if (!account) return reply.code(404).send({ error: "provider_account_usage_not_found" });
 
         const deleted = await deleteProviderAccountUsageRecord({
-            accountId: request.userId,
+            accountId: access.resourceAccountId,
             recordId: request.params.recordId,
         });
         if (deleted === "not_found") {

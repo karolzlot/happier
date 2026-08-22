@@ -434,6 +434,81 @@ describe('ConnectedServiceQuotasCoordinator', () => {
     expect((api as any).registerProviderAccountUsageSnapshotPlain).toHaveBeenCalledTimes(1);
   });
 
+  it('uses an authorized plaintext shared profile while the caller account remains e2ee', async () => {
+    const now = 1_000_000;
+    const credentials: Credentials = {
+      token: 'happy-token',
+      encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+    };
+    const record = buildConnectedServiceCredentialRecord({
+      now,
+      serviceId: 'openai-codex',
+      profileId: 'company-codex',
+      kind: 'oauth',
+      expiresAt: now + 60_000,
+      oauth: {
+        accessToken: 'access',
+        refreshToken: 'refresh',
+        idToken: null,
+        scope: null,
+        tokenType: null,
+        providerAccountId: 'company-account',
+        providerEmail: 'company@example.com',
+      },
+    });
+    const api = {
+      getAccountEncryptionMode: vi.fn(async () => 'e2ee' as const),
+      getConnectedServiceQuotaSnapshotPlain: vi.fn(async () => null),
+      getConnectedServiceQuotaSnapshotSealed: vi.fn(async () => null),
+      getConnectedServiceCredentialPlain: vi.fn(async () => ({ content: { t: 'plain' as const, v: record } })),
+      getConnectedServiceCredentialSealed: vi.fn(async () => null),
+      registerProviderAccountUsageSnapshotPlain: vi.fn(async () => {}),
+      registerProviderAccountUsageSnapshotSealed: vi.fn(async () => {}),
+    } as unknown as QuotaApi;
+    const fetcher: ConnectedServiceQuotaFetcher = {
+      serviceId: 'openai-codex',
+      fetch: vi.fn(async ({ record: inputRecord }: FetchArgs): Promise<ConnectedServiceQuotaSnapshotV1 | null> => ({
+        v: 1,
+        serviceId: inputRecord.serviceId,
+        profileId: inputRecord.profileId,
+        fetchedAt: now,
+        staleAfterMs: 300_000,
+        planLabel: 'Pro',
+        accountLabel: 'company@example.com',
+        meters: [],
+      })),
+    };
+    const coordinator = new ConnectedServiceQuotasCoordinator({
+      api,
+      credentials,
+      quotaFetchers: [fetcher],
+      now: () => now,
+      randomBytes: (length: number) => randomBytes(length),
+    });
+    coordinator.registerSpawnTarget({
+      pid: 123,
+      connectedServicesBindingsRaw: {
+        v: 1,
+        bindingsByServiceId: { 'openai-codex': { source: 'connected', profileId: 'company-codex' } },
+      },
+    });
+
+    await coordinator.tickOnce();
+
+    expect(api.getConnectedServiceQuotaSnapshotPlain).toHaveBeenCalledWith({
+      serviceId: 'openai-codex',
+      profileId: 'company-codex',
+    });
+    expect(api.getConnectedServiceCredentialPlain).toHaveBeenCalledWith({
+      serviceId: 'openai-codex',
+      profileId: 'company-codex',
+    });
+    expect(api.getConnectedServiceCredentialSealed).not.toHaveBeenCalled();
+    expect(fetcher.fetch).toHaveBeenCalledTimes(1);
+    expect(api.registerProviderAccountUsageSnapshotPlain).toHaveBeenCalledTimes(1);
+    expect(api.registerProviderAccountUsageSnapshotSealed).not.toHaveBeenCalled();
+  });
+
   it('consumes recovery credits through the quota fetcher and persists a refreshed plaintext snapshot', async () => {
     let now = 1_000_000;
     const accountUsageStore = createProviderAccountUsageStore();
