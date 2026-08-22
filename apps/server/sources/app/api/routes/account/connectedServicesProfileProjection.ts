@@ -13,6 +13,7 @@ import {
 } from "../connect/connectedServicesV3/credentialMetadataV3";
 import { deriveConnectedServiceCredentialStatus } from "../connect/credentialHealthMetadata";
 import { resolveConnectedServiceCredentialRevision } from "../connect/credentials/credentialRevision";
+import { listSharedConnectedServicePoolGrantsForGrantee } from "../connect/sharedPools/sharedConnectedServicePoolConfig";
 
 export type AccountConnectedServicesProjection = Pick<
     AccountProfile,
@@ -31,6 +32,18 @@ type ServiceAccountTokenProjectionRow = Readonly<{
     metadata: unknown;
     expiresAt: Date | null;
     lastUsedAt: Date | null;
+}>;
+
+type ConnectedServiceAuthGroupProjectionRow = Readonly<{
+    vendor: string;
+    groupId: string;
+    displayName: string | null;
+    activeProfileId: string | null;
+    generation: number;
+    members: readonly Readonly<{
+        profileId: string;
+        enabled: boolean;
+    }>[];
 }>;
 
 function projectConnectedServiceProfile(row: ServiceAccountTokenProjectionRow): ConnectedServiceProfile {
@@ -94,7 +107,13 @@ export async function buildAccountConnectedServicesProjection(params: Readonly<{
         return { connectedServices: [], connectedServicesV2: [], connectedServiceCredentialRevisionsV1: [] };
     }
 
-    const tokens = await params.tx.serviceAccountToken.findMany({
+    const grants = listSharedConnectedServicePoolGrantsForGrantee({
+        env,
+        requesterAccountId: params.accountId,
+    });
+    const delegatedServiceIds = new Set(grants.map((grant) => grant.serviceId));
+
+    const ownTokens = await params.tx.serviceAccountToken.findMany({
         where: { accountId: params.accountId },
         select: {
             id: true,
@@ -106,6 +125,59 @@ export async function buildAccountConnectedServicesProjection(params: Readonly<{
         },
         orderBy: [{ vendor: "asc" }, { profileId: "asc" }],
     });
+
+    const tokens: ServiceAccountTokenProjectionRow[] = ownTokens.filter(
+        (row) => !delegatedServiceIds.has(row.vendor as ConnectedServiceId),
+    );
+    const delegatedGroups: ConnectedServiceAuthGroupProjectionRow[] = [];
+
+    for (const grant of grants) {
+        const group = await params.tx.connectedServiceAuthGroup.findUnique({
+            where: {
+                accountId_vendor_groupId: {
+                    accountId: grant.ownerAccountId,
+                    vendor: grant.serviceId,
+                    groupId: grant.groupId,
+                },
+            },
+            select: {
+                vendor: true,
+                groupId: true,
+                displayName: true,
+                activeProfileId: true,
+                generation: true,
+                members: {
+                    select: { profileId: true, enabled: true },
+                    orderBy: [{ priority: "asc" }, { createdAt: "asc" }, { profileId: "asc" }],
+                },
+            },
+        });
+        if (!group) continue;
+
+        const memberProfileIds = group.members.map((member) => member.profileId);
+        const sharedTokens = await params.tx.serviceAccountToken.findMany({
+            where: {
+                accountId: grant.ownerAccountId,
+                vendor: grant.serviceId,
+                profileId: { in: memberProfileIds },
+            },
+            select: {
+                id: true,
+                vendor: true,
+                profileId: true,
+                metadata: true,
+                expiresAt: true,
+                lastUsedAt: true,
+            },
+            orderBy: [{ vendor: "asc" }, { profileId: "asc" }],
+        });
+        tokens.push(...sharedTokens);
+        delegatedGroups.push(group);
+    }
+
+    tokens.sort((left, right) => (
+        left.vendor.localeCompare(right.vendor) || left.profileId.localeCompare(right.profileId)
+    ));
 
     const connectedServices = buildConnectedVendors(tokens);
     const connectedServicesV2 = buildConnectedServicesV2FromTokens(tokens);
@@ -127,7 +199,7 @@ export async function buildAccountConnectedServicesProjection(params: Readonly<{
         return { connectedServices, connectedServicesV2, connectedServiceCredentialRevisionsV1 };
     }
 
-    const authGroups = await params.tx.connectedServiceAuthGroup.findMany({
+    const ownAuthGroups = await params.tx.connectedServiceAuthGroup.findMany({
         where: { accountId: params.accountId },
         select: {
             vendor: true,
@@ -136,13 +208,18 @@ export async function buildAccountConnectedServicesProjection(params: Readonly<{
             activeProfileId: true,
             generation: true,
             members: {
-                select: { profileId: true },
-                where: { enabled: true },
+                select: { profileId: true, enabled: true },
                 orderBy: [{ priority: "asc" }, { createdAt: "asc" }, { profileId: "asc" }],
             },
         },
         orderBy: [{ vendor: "asc" }, { groupId: "asc" }],
     });
+    const authGroups = [
+        ...ownAuthGroups.filter((group) => !delegatedServiceIds.has(group.vendor as ConnectedServiceId)),
+        ...delegatedGroups,
+    ].sort((left, right) => (
+        left.vendor.localeCompare(right.vendor) || left.groupId.localeCompare(right.groupId)
+    ));
 
     const servicesById = new Map(connectedServicesV2.map((entry) => [entry.serviceId, entry]));
     for (const group of authGroups) {
@@ -155,7 +232,9 @@ export async function buildAccountConnectedServicesProjection(params: Readonly<{
             profiles: [],
             groups: [] as ConnectedServiceGroup[],
         };
-        const memberProfileIds = group.members.map((member) => member.profileId);
+        const memberProfileIds = group.members
+            .filter((member) => member.enabled)
+            .map((member) => member.profileId);
         existing.groups.push({
             groupId: group.groupId,
             displayName: group.displayName,

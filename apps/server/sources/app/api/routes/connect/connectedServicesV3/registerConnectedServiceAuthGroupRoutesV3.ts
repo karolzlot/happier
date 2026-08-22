@@ -52,6 +52,11 @@ import {
     stringifyAuthGroupState,
     updateAuthGroupMemberAndBumpGenerationInTx,
 } from "./authGroupRepository";
+import {
+    resolveConnectedServiceGroupResourceScope,
+    resolveConnectedServiceOwnerOnlyAccountId,
+    resolveConnectedServiceResourceScope,
+} from "../sharedPools/sharedConnectedServicePoolAccess";
 
 const NotFoundResponseSchema = z.object({ error: z.literal("not_found") });
 type AuthGroupEnvelopeResponse = z.infer<typeof AuthGroupEnvelopeResponseSchema>;
@@ -207,10 +212,22 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             response: { 200: AuthGroupListResponseSchema, 404: NotFoundResponseSchema },
         },
     }, async (request, reply) => {
-        const groups = await listAuthGroupsForAccount({
-            accountId: request.userId,
+        const scope = await resolveConnectedServiceResourceScope({
+            requesterAccountId: request.userId,
             serviceId: request.params.serviceId,
         });
+        const groups = scope?.kind === "owned"
+            ? await listAuthGroupsForAccount({
+                accountId: scope.resourceAccountId,
+                serviceId: request.params.serviceId,
+            })
+            : scope
+                ? [await findAuthGroupForAccount({
+                    accountId: scope.resourceAccountId,
+                    serviceId: request.params.serviceId,
+                    groupId: scope.groupId,
+                })].filter((group): group is NonNullable<typeof group> => group !== null)
+                : [];
         return reply.send({ groups });
     });
 
@@ -222,8 +239,12 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             response: { 200: AuthGroupEnvelopeResponseSchema, 400: AuthGroupErrorResponseSchema, 404: z.union([NotFoundResponseSchema, AuthGroupErrorResponseSchema]), 409: AuthGroupErrorResponseSchema },
         },
     }, async (request, reply) => {
-        const accountId = request.userId;
         const serviceId = request.params.serviceId;
+        const accountId = resolveConnectedServiceOwnerOnlyAccountId({
+            requesterAccountId: request.userId,
+            serviceId,
+        });
+        if (!accountId) return reply.code(404).send({ error: "not_found" });
         const body = request.body;
         const members = body.members;
         const policyPatch = parsePolicyPatchForRequest(body.policy);
@@ -313,8 +334,14 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             response: { 200: AuthGroupEnvelopeResponseSchema, 404: z.union([NotFoundResponseSchema, AuthGroupErrorResponseSchema]) },
         },
     }, async (request, reply) => {
+        const scope = await resolveConnectedServiceGroupResourceScope({
+            requesterAccountId: request.userId,
+            serviceId: request.params.serviceId,
+            groupId: request.params.groupId,
+        });
+        if (!scope) return reply.code(404).send({ error: "connect_group_not_found" });
         const envelope = await loadGroupEnvelope({
-            accountId: request.userId,
+            accountId: scope.resourceAccountId,
             serviceId: request.params.serviceId,
             groupId: request.params.groupId,
         });

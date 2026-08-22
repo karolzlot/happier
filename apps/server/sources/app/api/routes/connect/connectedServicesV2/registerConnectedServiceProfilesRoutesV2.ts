@@ -17,6 +17,7 @@ import {
   normalizeConnectedServiceCredentialMetadataV3,
 } from "../connectedServicesV3/credentialMetadataV3";
 import { deriveConnectedServiceCredentialStatus } from "../credentialHealthMetadata";
+import { resolveConnectedServiceResourceScope } from "../sharedPools/sharedConnectedServicePoolAccess";
 
 export function registerConnectedServiceProfilesRoutesV2(app: Fastify): void {
   app.get("/v2/connect/:serviceId/profiles", {
@@ -43,11 +44,31 @@ export function registerConnectedServiceProfilesRoutesV2(app: Fastify): void {
     const userId = request.userId;
     const serviceId = request.params.serviceId satisfies ConnectedServiceId;
 
-    const rows = await db.serviceAccountToken.findMany({
-      where: { accountId: userId, vendor: serviceId },
+    const scope = await resolveConnectedServiceResourceScope({
+      requesterAccountId: userId,
+      serviceId,
+    });
+
+    const sharedProfileIds = scope?.kind === "shared"
+      ? (await db.connectedServiceAuthGroupMember.findMany({
+          where: {
+            accountId: scope.resourceAccountId,
+            vendor: serviceId,
+            groupId: scope.groupId,
+          },
+          select: { profileId: true },
+        })).map((member) => member.profileId)
+      : null;
+
+    const rows = scope ? await db.serviceAccountToken.findMany({
+      where: {
+        accountId: scope.resourceAccountId,
+        vendor: serviceId,
+        ...(sharedProfileIds ? { profileId: { in: sharedProfileIds } } : {}),
+      },
       orderBy: { updatedAt: "desc" },
       select: { profileId: true, metadata: true, expiresAt: true, lastUsedAt: true },
-    });
+    }) : [];
 
     const profiles = rows.map((row) => {
       const meta = isConnectedServiceCredentialMetadataV2(row.metadata)
