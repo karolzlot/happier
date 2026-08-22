@@ -75,6 +75,7 @@ This document describes how to deploy the Happier backend (`apps/server`) and th
     - `VOICE_LEASE_RETENTION_DAYS` (default `30`, clamp 7–365)
     - `VOICE_LEASE_CLEANUP_INTERVAL_MS` (default `21600000` = 6h, min `10000`)
 - Debug logging: `DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING` (enables file logging + dev log endpoint).
+- Shared connected-service pools: `HAPPIER_SHARED_CONNECTED_SERVICE_POOLS_JSON` delegates an exact owner pool to explicit account IDs. See `shared-connected-service-pools.md` for the trust model, configuration, validation, and rollback procedure.
 
 ## Docker image
 A single multi-target Dockerfile is provided at `Dockerfile`.

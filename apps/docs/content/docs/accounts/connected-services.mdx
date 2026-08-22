@@ -15,7 +15,7 @@ See [Provider authentication](/agents/provider-authentication).
 They exist so you can:
 
 - connect subscriptions and API keys without manually re-entering them for every backend
-- keep credentials encrypted in Happier Cloud and decrypt them only on the client / daemon
+- keep credentials in the account's selected storage path: client-encrypted for E2EE accounts or server-sealed at rest for plain accounts
 - choose per-service auth at session start instead of relying only on each backend's native auth
 - monitor usage / quota snapshots for supported services
 - make multi-machine workflows easier when the target machine should reuse the same Happier-managed credential
@@ -306,6 +306,55 @@ and reverse that order.
   transcript so they do not bury the conversation.
 </Callout>
 
+## Sharing one pool between accounts
+
+Self-hosted operators can delegate one exact connected-service pool to several Happier accounts. Each person keeps a separate account, machine list, settings, and session namespace, while every daemon uses the same owner credential rows, active profile, refresh lease, health state, and quota state.
+
+This capability is disabled unless `HAPPIER_SHARED_CONNECTED_SERVICE_POOLS_JSON` is configured on the server. The first validated deployment uses one `openai-codex` pool.
+
+### What you need first
+
+- A dedicated vault account in `plain` mode.
+- One or more Codex profiles connected to the vault account and placed in a pool such as `company-codex`.
+- A separate Happier account for every employee.
+- The account ID of the vault and every grantee. An authenticated CLI reports its account ID in `happier doctor --json`.
+- The fork server and fork CLI on machines that use delegation. A released CLI does not support the delegated E2EE path.
+
+The vault credential is not E2EE. The server can decrypt it and return it to an authorized daemon. Keep the default `server_sealed` at-rest policy, protect `HANDY_MASTER_SECRET`, and use only trusted company machines.
+
+An E2EE grantee remains E2EE for its own session text. Session encryption and the delegated credential store are independent. Plain employee accounts also work, but their session content follows the normal plain-account storage rules.
+
+### Configure the grant
+
+Set the server storage policy so the plain vault account is supported, retain server-side credential sealing, and add the grant JSON:
+
+```bash
+HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY=optional
+HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_CREDENTIALS_AT_REST=server_sealed
+HAPPIER_SHARED_CONNECTED_SERVICE_POOLS_JSON='[{"ownerAccountId":"vault-account-id","serviceId":"openai-codex","groupId":"company-codex","granteeAccountIds":["employee-account-id","operator-account-id"]}]'
+```
+
+Restart the server after changing the environment. Each grantee should then see only the configured pool and its current members in Connected services. Use `happier connect status` on a grantee machine to verify discovery before starting a Codex session.
+
+The configuration fails closed when JSON is malformed or assignments are ambiguous. It rejects an empty grantee list, duplicate grantees, an owner listed as its own grantee, duplicate pool definitions, and more than one pool for the same grantee and service.
+
+### Access boundaries
+
+A grant allows the daemon to perform the runtime operations needed to use a pool:
+
+- read member profiles, credentials, health, quota, and provider usage
+- acquire the shared refresh lease and commit a revision-fenced credential refresh
+- update runtime health and quota observations
+- change the active member through the existing generation fences
+
+Only the vault owner can connect or delete credentials, edit the pool policy, add or remove members, rename the pool, or perform an unfenced replacement. A grant does not expose the owner's sessions, machines, messages, settings, prompts, KV data, other services, other pools, or profiles outside the configured pool.
+
+### Remove or change a grant
+
+Update the JSON and restart the server. Removing the grant does not migrate or delete owner data, and it requires no database rollback. It stops future discovery, reads, refreshes, and runtime updates from that grantee.
+
+Credentials already materialized on a machine can remain usable for the lifetime of an existing process or local provider session. Stop affected Happier sessions and daemons before removing a grant when access must end immediately.
+
 ## Quotas
 
 Quota / usage surfaces are behind the `connectedServices.quotas` feature gate.
@@ -378,7 +427,9 @@ Instead:
 
 This keeps provider secrets, including server-side OAuth client secrets, out of the UI bundle.
 
-Token-based services, including GitHub token profiles, are stored as connected-service credentials and decrypted only where the client/daemon needs to use them. They do not require Happier to run a GitHub OAuth application in the current build.
+For E2EE accounts, connected-service records follow the client-encrypted path and are decrypted where the client or daemon needs to use them. Plain accounts use V3 plaintext envelopes; the server can read those records and, by default, seals them in database storage with the server master secret. A delegated pool always uses its plain owner account's V3 path, even when the grantee's own account and sessions are E2EE.
+
+Token-based services, including GitHub token profiles, use the storage path selected by their owner account. They do not require Happier to run a GitHub OAuth application in the current build.
 
 When a session starts, the daemon decrypts the selected records locally and materializes only the backend-specific auth it needs for that spawn.
 
@@ -434,3 +485,9 @@ Quota fetchers:
 - `HAPPIER_CONNECTED_SERVICES_ANTHROPIC_USAGE_URL`
 
 `HAPPIER_CONNECTED_SERVICES_ANTHROPIC_USAGE_URL` remains accepted as a fallback override for Claude subscription quota fetching, but the primary service identity is `claude-subscription`.
+
+## Related
+
+- [Encryption and plaintext storage](/self-hosting/encryption)
+- [Provider authentication](/agents/provider-authentication)
+- [Session handoff](/sessions/session-handoff)

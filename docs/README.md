@@ -14,6 +14,7 @@ This folder documents how Happier works internally, with a focus on protocol, ba
 - binary-runtime.md: Binary-safe runtime rules and bundled internal workspace packaging.
 - backend-architecture.md: Internal backend structure, data flow, and key subsystems.
 - deployment.md: How to deploy the backend and required infrastructure.
+- shared-connected-service-pools.md: Fork contract and operator runbook for delegating one owner-managed connected-service pool across isolated accounts.
 - cli-architecture.md: CLI and daemon architecture and how they interact with the server.
 - codex-feature-matrix.md: Low-level Codex implementation matrix and unified-architecture migration notes.
 - claude-feature-matrix.md: Low-level Claude implementation matrix and unified-architecture migration notes.
