@@ -1,7 +1,19 @@
 import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
+
+const { emitUpdate } = vi.hoisted(() => ({
+    emitUpdate: vi.fn(),
+}));
+
+vi.mock("@/app/events/eventRouter", async () => {
+    const actual = await vi.importActual<typeof import("@/app/events/eventRouter")>("@/app/events/eventRouter");
+    return {
+        ...actual,
+        eventRouter: { emitUpdate },
+    };
+});
 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -144,6 +156,7 @@ describe("shared connected service pool delegation (integration)", () => {
     afterEach(async () => {
         await closeTrackedApps();
         harness.resetEnv();
+        vi.clearAllMocks();
         await db.accountChange.deleteMany().catch(() => {});
         await db.serviceAccountToken.deleteMany().catch(() => {});
         await db.account.deleteMany().catch(() => {});
@@ -581,5 +594,213 @@ describe("shared connected service pool delegation (integration)", () => {
         const sharedRow = rows.find((row) => row.profileId === "company-primary");
         expect(sharedRow?.metadata).toEqual(expect.objectContaining({ health }));
         expect(Buffer.from(sharedRow!.token).toString("utf8")).not.toContain("company-access-b");
+    });
+
+    it("shares fenced group runtime state and publishes filtered changes to every grantee", async () => {
+        const owner = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const employee = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const secondEmployee = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const unrelated = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        for (const profileId of ["company-primary", "company-secondary", "owner-private"]) {
+            await createConnectedProfile({
+                accountId: owner.id,
+                serviceId: "openai-codex",
+                profileId,
+                credentialRevision: profileId === "company-primary"
+                    ? "csr_8123456789ABCDEFGHJKMNPQRS"
+                    : profileId === "company-secondary"
+                        ? "csr_9123456789ABCDEFGHJKMNPQRS"
+                        : "csr_A123456789ABCDEFGHJKMNPQRS",
+            });
+        }
+        await createGroup({
+            accountId: owner.id,
+            serviceId: "openai-codex",
+            groupId: "company-codex",
+            profileIds: ["company-primary", "company-secondary"],
+        });
+        await createGroup({
+            accountId: owner.id,
+            serviceId: "openai-codex",
+            groupId: "owner-private-group",
+            profileIds: ["owner-private"],
+        });
+
+        harness.resetEnv({
+            HAPPIER_SHARED_CONNECTED_SERVICE_POOLS_JSON: JSON.stringify([{
+                ownerAccountId: owner.id,
+                serviceId: "openai-codex",
+                groupId: "company-codex",
+                granteeAccountIds: [employee.id, secondEmployee.id, "missing-grantee-account"],
+            }]),
+        });
+        const app = await createReadyApp();
+
+        const runtimeUpdate = await app.inject({
+            method: "PATCH",
+            url: "/v3/connect/openai-codex/groups/company-codex/runtime-state",
+            headers: authHeaders(employee.id),
+            payload: {
+                expectedGeneration: 0,
+                expectedRuntimeStateRevision: 0,
+                state: { status: "switching", lastSwitchReason: "usage_limit" },
+                memberStates: [{
+                    profileId: "company-primary",
+                    state: {
+                        quotaExhaustedUntilMs: 10,
+                        lastFailureKind: "usage_limit",
+                    },
+                }],
+            },
+        });
+        expect(runtimeUpdate.statusCode).toBe(200);
+        expect(runtimeUpdate.json()).toEqual({
+            group: expect.objectContaining({
+                groupId: "company-codex",
+                generation: 0,
+                runtimeStateRevision: 1,
+                state: expect.objectContaining({ status: "switching", lastSwitchReason: "usage_limit" }),
+            }),
+        });
+
+        const staleRuntimeUpdate = await app.inject({
+            method: "PATCH",
+            url: "/v3/connect/openai-codex/groups/company-codex/runtime-state",
+            headers: authHeaders(secondEmployee.id),
+            payload: {
+                expectedGeneration: 0,
+                expectedRuntimeStateRevision: 0,
+                state: { status: "exhausted" },
+            },
+        });
+        expect(staleRuntimeUpdate.statusCode).toBe(409);
+        expect(staleRuntimeUpdate.json()).toEqual({
+            error: "connect_group_runtime_state_revision_conflict",
+            runtimeStateRevision: 1,
+        });
+
+        const switched = await app.inject({
+            method: "POST",
+            url: "/v3/connect/openai-codex/groups/company-codex/active-profile",
+            headers: authHeaders(secondEmployee.id),
+            payload: { profileId: "company-secondary", expectedGeneration: 0 },
+        });
+        expect(switched.statusCode).toBe(200);
+        expect(switched.json()).toEqual({
+            group: expect.objectContaining({
+                activeProfileId: "company-secondary",
+                generation: 1,
+                runtimeStateRevision: 1,
+            }),
+        });
+
+        const staleSwitch = await app.inject({
+            method: "POST",
+            url: "/v3/connect/openai-codex/groups/company-codex/active-profile",
+            headers: authHeaders(employee.id),
+            payload: { profileId: "company-primary", expectedGeneration: 0 },
+        });
+        expect(staleSwitch.statusCode).toBe(409);
+        expect(staleSwitch.json()).toEqual({
+            error: "connect_group_generation_conflict",
+            generation: 1,
+        });
+
+        const current = await app.inject({
+            method: "GET",
+            url: "/v3/connect/openai-codex/groups/company-codex",
+            headers: authHeaders(employee.id),
+        });
+        expect(current.statusCode).toBe(200);
+        expect(current.json()).toEqual({
+            group: expect.objectContaining({
+                activeProfileId: "company-secondary",
+                generation: 1,
+                runtimeStateRevision: 1,
+                members: expect.arrayContaining([
+                    expect.objectContaining({
+                        profileId: "company-primary",
+                        state: expect.objectContaining({ quotaExhaustedUntilMs: 10 }),
+                    }),
+                ]),
+            }),
+        });
+
+        const privateRuntimeUpdate = await app.inject({
+            method: "PATCH",
+            url: "/v3/connect/openai-codex/groups/owner-private-group/runtime-state",
+            headers: authHeaders(employee.id),
+            payload: {
+                expectedGeneration: 0,
+                expectedRuntimeStateRevision: 0,
+                state: { status: "error" },
+            },
+        });
+        expect(privateRuntimeUpdate.statusCode).toBe(404);
+
+        const adminPatch = await app.inject({
+            method: "PATCH",
+            url: "/v3/connect/openai-codex/groups/company-codex",
+            headers: authHeaders(employee.id),
+            payload: { displayName: "Employee rename" },
+        });
+        expect(adminPatch.statusCode).toBe(404);
+
+        const adminMember = await app.inject({
+            method: "POST",
+            url: "/v3/connect/openai-codex/groups/company-codex/members",
+            headers: authHeaders(employee.id),
+            payload: { profileId: "owner-private", expectedGeneration: 1 },
+        });
+        expect(adminMember.statusCode).toBe(404);
+
+        const adminDelete = await app.inject({
+            method: "DELETE",
+            url: "/v3/connect/openai-codex/groups/company-codex",
+            headers: { "x-test-user-id": employee.id },
+        });
+        expect(adminDelete.statusCode).toBe(404);
+
+        const changes = await db.accountChange.findMany({
+            where: { kind: "account", entityId: "self" },
+            select: { accountId: true, hint: true },
+        });
+        expect(changes.map((change) => change.accountId).sort()).toEqual([
+            employee.id,
+            owner.id,
+            secondEmployee.id,
+        ].sort());
+        expect(changes.every((change) => (change.hint as { connectedServices?: boolean })?.connectedServices === true)).toBe(true);
+
+        for (const granteeAccountId of [employee.id, secondEmployee.id]) {
+            const emitted = emitUpdate.mock.calls
+                .map(([event]) => event)
+                .find((event) => event.userId === granteeAccountId);
+            expect(emitted).toEqual(expect.objectContaining({
+                userId: granteeAccountId,
+                payload: expect.objectContaining({
+                    body: expect.objectContaining({
+                        connectedServicesV2: [expect.objectContaining({
+                            serviceId: "openai-codex",
+                            groups: [expect.objectContaining({ groupId: "company-codex" })],
+                        })],
+                    }),
+                }),
+            }));
+            expect(JSON.stringify(emitted)).not.toContain("owner-private");
+        }
+        expect(emitUpdate.mock.calls.some(([event]) => event.userId === unrelated.id)).toBe(false);
     });
 });

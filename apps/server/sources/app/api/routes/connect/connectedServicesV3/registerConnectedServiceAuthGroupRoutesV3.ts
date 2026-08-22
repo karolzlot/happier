@@ -358,7 +358,12 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         },
     }, async (request, reply) => {
         const { serviceId, groupId } = request.params;
-        const existingRecord = await findAuthGroupWithStoredActiveProfileForAccount({ accountId: request.userId, serviceId, groupId });
+        const accountId = resolveConnectedServiceOwnerOnlyAccountId({
+            requesterAccountId: request.userId,
+            serviceId,
+        });
+        if (!accountId) return reply.code(404).send({ error: "connect_group_not_found" });
+        const existingRecord = await findAuthGroupWithStoredActiveProfileForAccount({ accountId, serviceId, groupId });
         if (!existingRecord) return reply.code(404).send({ error: "connect_group_not_found" });
         const existing = existingRecord.group;
         const policyPatch = parsePolicyPatchForRequest(request.body.policy);
@@ -423,7 +428,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             if (changesGeneration) {
                 const update = await tx.connectedServiceAuthGroup.updateMany({
                     where: {
-                        accountId: request.userId,
+                        accountId,
                         vendor: serviceId,
                         groupId,
                         generation: request.body.expectedGeneration,
@@ -432,26 +437,26 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                 });
                 if (update.count !== 1) {
                     const current = await tx.connectedServiceAuthGroup.findUnique({
-                        where: { accountId_vendor_groupId: { accountId: request.userId, vendor: serviceId, groupId } },
+                        where: { accountId_vendor_groupId: { accountId, vendor: serviceId, groupId } },
                         select: { generation: true },
                     });
                     return { type: "generation-conflict" as const, generation: current?.generation ?? existing.generation };
                 }
             } else if (request.body.displayName !== undefined || request.body.policy !== undefined) {
                 await tx.connectedServiceAuthGroup.update({
-                    where: { accountId_vendor_groupId: { accountId: request.userId, vendor: serviceId, groupId } },
+                    where: { accountId_vendor_groupId: { accountId, vendor: serviceId, groupId } },
                     data,
                 });
             }
             if (changesDisplayName || changesGeneration) {
-                await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
+                await recordConnectedServiceAccountProfileChange(tx, { accountId });
             }
             return { type: "success" as const };
         });
         if (patchResult.type === "generation-conflict") {
             return reply.code(409).send({ error: "connect_group_generation_conflict", generation: patchResult.generation });
         }
-        const envelope = await loadGroupEnvelope({ accountId: request.userId, serviceId, groupId });
+        const envelope = await loadGroupEnvelope({ accountId, serviceId, groupId });
         if (!envelope) return reply.code(404).send({ error: "connect_group_not_found" });
         return reply.send(envelope);
     });
@@ -464,18 +469,23 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         },
     }, async (request, reply) => {
         const { serviceId, groupId } = request.params;
-        const existing = await findAuthGroupForAccount({ accountId: request.userId, serviceId, groupId });
+        const accountId = resolveConnectedServiceOwnerOnlyAccountId({
+            requesterAccountId: request.userId,
+            serviceId,
+        });
+        if (!accountId) return reply.code(404).send({ error: "connect_group_not_found" });
+        const existing = await findAuthGroupForAccount({ accountId, serviceId, groupId });
         if (!existing) return reply.code(404).send({ error: "connect_group_not_found" });
         await inTx(async (tx) => {
             await deleteConnectedServiceUsageSourcesForGroup({
-                accountId: request.userId,
+                accountId,
                 serviceId,
                 groupId,
             }, tx);
             await tx.connectedServiceAuthGroup.delete({
-                where: { accountId_vendor_groupId: { accountId: request.userId, vendor: serviceId, groupId } },
+                where: { accountId_vendor_groupId: { accountId, vendor: serviceId, groupId } },
             });
-            await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
+            await recordConnectedServiceAccountProfileChange(tx, { accountId });
         });
         return reply.send({ success: true });
     });
@@ -489,9 +499,16 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         },
     }, async (request, reply) => {
         const { serviceId, groupId } = request.params;
+        const scope = await resolveConnectedServiceGroupResourceScope({
+            requesterAccountId: request.userId,
+            serviceId,
+            groupId,
+        });
+        if (!scope) return reply.code(404).send({ error: "connect_group_not_found" });
+        const accountId = scope.resourceAccountId;
         const result = await inTx(async (tx) => {
             const group = await tx.connectedServiceAuthGroup.findUnique({
-                where: { accountId_vendor_groupId: { accountId: request.userId, vendor: serviceId, groupId } },
+                where: { accountId_vendor_groupId: { accountId, vendor: serviceId, groupId } },
                 select: { id: true, generation: true, runtimeStateRevision: true, stateJson: true },
             });
             if (!group) return { type: "not-found" as const };
@@ -507,7 +524,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                 ? []
                 : await tx.connectedServiceAuthGroupMember.findMany({
                     where: {
-                        accountId: request.userId,
+                        accountId,
                         vendor: serviceId,
                         groupId,
                         profileId: { in: requestedProfileIds },
@@ -575,7 +592,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                     await tx.connectedServiceAuthGroupMember.update({
                         where: {
                             accountId_vendor_groupId_profileId: {
-                                accountId: request.userId,
+                                accountId,
                                 vendor: serviceId,
                                 groupId,
                                 profileId: member.profileId,
@@ -584,7 +601,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                         data: { stateJson: stringifyAuthGroupMemberState(member.state) },
                     });
                 }
-                await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
+                await recordConnectedServiceAccountProfileChange(tx, { accountId });
             }
 
             return { type: "success" as const };
@@ -609,7 +626,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             });
         }
 
-        const envelope = await loadGroupEnvelope({ accountId: request.userId, serviceId, groupId });
+        const envelope = await loadGroupEnvelope({ accountId, serviceId, groupId });
         if (!envelope) return reply.code(404).send({ error: "connect_group_not_found" });
         return reply.send(envelope);
     });
@@ -623,6 +640,11 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         },
     }, async (request, reply) => {
         const { serviceId, groupId } = request.params;
+        const accountId = resolveConnectedServiceOwnerOnlyAccountId({
+            requesterAccountId: request.userId,
+            serviceId,
+        });
+        if (!accountId) return reply.code(404).send({ error: "connect_group_not_found" });
         if (request.body.expectedGeneration === undefined) {
             return reply.code(400).send({ error: "connect_group_generation_required" });
         }
@@ -630,7 +652,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         try {
             const result = await inTx(async (tx) => {
                 const mutationResult = await createAuthGroupMemberAndBumpGenerationInTx(tx, {
-                    accountId: request.userId,
+                    accountId,
                     serviceId,
                     groupId,
                     profileId: request.body.profileId,
@@ -639,7 +661,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                     expectedGeneration,
                 });
                 if (mutationResult === "created") {
-                    await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
+                    await recordConnectedServiceAccountProfileChange(tx, { accountId });
                 }
                 return mutationResult;
             });
@@ -654,7 +676,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             if (isUniqueConflict(error)) return reply.code(409).send({ error: "connect_group_member_already_exists" });
             if (isForeignKeyConflict(error)) {
                 const groupStillExists = await db.connectedServiceAuthGroup.findUnique({
-                    where: { accountId_vendor_groupId: { accountId: request.userId, vendor: serviceId, groupId } },
+                    where: { accountId_vendor_groupId: { accountId, vendor: serviceId, groupId } },
                     select: { id: true },
                 });
                 if (!groupStillExists) return reply.code(404).send({ error: "connect_group_not_found" });
@@ -662,7 +684,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             }
             throw error;
         }
-        const envelope = await loadGroupEnvelope({ accountId: request.userId, serviceId, groupId });
+        const envelope = await loadGroupEnvelope({ accountId, serviceId, groupId });
         if (!envelope) return reply.code(404).send({ error: "connect_group_not_found" });
         return reply.send(envelope);
     });
@@ -676,13 +698,18 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         },
     }, async (request, reply) => {
         const { serviceId, groupId, profileId } = request.params;
+        const accountId = resolveConnectedServiceOwnerOnlyAccountId({
+            requesterAccountId: request.userId,
+            serviceId,
+        });
+        if (!accountId) return reply.code(404).send({ error: "connect_group_member_not_found" });
         if (request.body.expectedGeneration === undefined) {
             return reply.code(400).send({ error: "connect_group_generation_required" });
         }
         const expectedGeneration = request.body.expectedGeneration;
         const result = await inTx(async (tx) => {
             const mutationResult = await updateAuthGroupMemberAndBumpGenerationInTx(tx, {
-                accountId: request.userId,
+                accountId,
                 serviceId,
                 groupId,
                 profileId,
@@ -691,7 +718,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                 expectedGeneration,
             });
             if (mutationResult === "updated") {
-                await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
+                await recordConnectedServiceAccountProfileChange(tx, { accountId });
             }
             return mutationResult;
         });
@@ -699,7 +726,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         if (typeof result === "object" && result.type === "generation_conflict") {
             return reply.code(409).send({ error: "connect_group_generation_conflict", generation: result.generation });
         }
-        const envelope = await loadGroupEnvelope({ accountId: request.userId, serviceId, groupId });
+        const envelope = await loadGroupEnvelope({ accountId, serviceId, groupId });
         if (!envelope) return reply.code(404).send({ error: "connect_group_not_found" });
         return reply.send(envelope);
     });
@@ -713,20 +740,25 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         },
     }, async (request, reply) => {
         const { serviceId, groupId, profileId } = request.params;
+        const accountId = resolveConnectedServiceOwnerOnlyAccountId({
+            requesterAccountId: request.userId,
+            serviceId,
+        });
+        if (!accountId) return reply.code(404).send({ error: "connect_group_member_not_found" });
         if (request.query.expectedGeneration === undefined) {
             return reply.code(400).send({ error: "connect_group_generation_required" });
         }
         const expectedGeneration = request.query.expectedGeneration;
         const result = await inTx(async (tx) => {
             const mutationResult = await deleteAuthGroupMemberAndBumpGenerationInTx(tx, {
-                accountId: request.userId,
+                accountId,
                 serviceId,
                 groupId,
                 profileId,
                 expectedGeneration,
             });
             if (mutationResult === "deleted") {
-                await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
+                await recordConnectedServiceAccountProfileChange(tx, { accountId });
             }
             return mutationResult;
         });
@@ -734,7 +766,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         if (typeof result === "object" && result.type === "generation_conflict") {
             return reply.code(409).send({ error: "connect_group_generation_conflict", generation: result.generation });
         }
-        const envelope = await loadGroupEnvelope({ accountId: request.userId, serviceId, groupId });
+        const envelope = await loadGroupEnvelope({ accountId, serviceId, groupId });
         if (!envelope) return reply.code(404).send({ error: "connect_group_not_found" });
         return reply.send(envelope);
     });
@@ -748,6 +780,13 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         },
     }, async (request, reply) => {
         const { serviceId, groupId } = request.params;
+        const scope = await resolveConnectedServiceGroupResourceScope({
+            requesterAccountId: request.userId,
+            serviceId,
+            groupId,
+        });
+        if (!scope) return reply.code(404).send({ error: "connect_group_not_found" });
+        const accountId = scope.resourceAccountId;
         if (!runtimeFallbackSupportedForService(serviceId)) {
             return reply.code(400).send({ error: "connect_group_runtime_fallback_unsupported" });
         }
@@ -760,12 +799,12 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
         const expectedGeneration = request.body.expectedGeneration;
         const result = await inTx(async (tx) => {
             const group = await tx.connectedServiceAuthGroup.findUnique({
-                where: { accountId_vendor_groupId: { accountId: request.userId, vendor: serviceId, groupId } },
+                where: { accountId_vendor_groupId: { accountId, vendor: serviceId, groupId } },
                 select: { id: true, activeProfileId: true, generation: true },
             });
             if (!group) return { type: "not-found" as const };
             const member = await tx.connectedServiceAuthGroupMember.findUnique({
-                where: { accountId_vendor_groupId_profileId: { accountId: request.userId, vendor: serviceId, groupId, profileId: request.body.profileId } },
+                where: { accountId_vendor_groupId_profileId: { accountId, vendor: serviceId, groupId, profileId: request.body.profileId } },
                 select: { enabled: true, stateJson: true },
             });
             if (!member?.enabled) return { type: "invalid-active-member" as const };
@@ -801,7 +840,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
                     generation: current?.generation ?? group.generation,
                 };
             }
-            await recordConnectedServiceAccountProfileChange(tx, { accountId: request.userId });
+            await recordConnectedServiceAccountProfileChange(tx, { accountId });
             return { type: "success" as const };
         });
 
@@ -816,7 +855,7 @@ export function registerConnectedServiceAuthGroupRoutesV3(app: Fastify): void {
             return reply.code(409).send({ error: "connect_group_generation_conflict", generation: result.generation });
         }
 
-        const envelope = await loadGroupEnvelope({ accountId: request.userId, serviceId, groupId });
+        const envelope = await loadGroupEnvelope({ accountId, serviceId, groupId });
         if (!envelope) return reply.code(404).send({ error: "connect_group_not_found" });
         return reply.send(envelope);
     });
