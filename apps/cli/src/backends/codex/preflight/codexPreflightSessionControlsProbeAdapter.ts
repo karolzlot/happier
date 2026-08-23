@@ -78,6 +78,7 @@ async function readControls(params: Readonly<{
 
 export const codexPreflightSessionControlsProbeAdapter: PreflightSessionControlsProbeAdapter = {
     connectedServiceAuth: 'materialized-env',
+    modelProbeCachePolicy: 'provider-owned',
     failureCacheStrategy: 'retry',
     probeModelsRaw: async (params) => {
         const controls = await readControls({

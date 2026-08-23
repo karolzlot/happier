@@ -126,6 +126,7 @@ describe('probeAgentModelsBestEffort (codex app-server)', () => {
       ],
       supportsFreeform: false,
       source: 'dynamic',
+      cacheable: false,
     });
   });
 
@@ -190,6 +191,7 @@ describe('probeAgentModelsBestEffort (codex app-server)', () => {
       availableModels: [],
       supportsFreeform: false,
       source: 'static',
+      cacheable: false,
     });
   });
 
@@ -226,6 +228,7 @@ describe('probeAgentModelsBestEffort (codex app-server)', () => {
       ],
       supportsFreeform: false,
       source: 'dynamic',
+      cacheable: false,
     });
     expect(withCodexAppServerClientMock).toHaveBeenCalledTimes(2);
     expect(readCodexAppServerSessionControlsMock).toHaveBeenCalledTimes(1);
@@ -309,6 +312,7 @@ describe('probeAgentModelsBestEffort (codex app-server)', () => {
         ],
         supportsFreeform: false,
         source: 'dynamic',
+        cacheable: false,
       });
     expect(withCodexAppServerClientMock).toHaveBeenCalledTimes(1);
     expect(readCodexAppServerSessionControlsMock).toHaveBeenCalledTimes(1);
@@ -346,6 +350,7 @@ describe('probeAgentModelsBestEffort (codex app-server)', () => {
       ],
       supportsFreeform: false,
       source: 'dynamic',
+      cacheable: false,
     });
     expect(withCodexAppServerClientMock).toHaveBeenCalledTimes(1);
     expect(readCodexAppServerSessionControlsMock).toHaveBeenCalledTimes(1);
@@ -420,6 +425,7 @@ describe('probeAgentModelsBestEffort (codex app-server)', () => {
       ],
       supportsFreeform: false,
       source: 'dynamic',
+      cacheable: false,
     });
   });
 });
