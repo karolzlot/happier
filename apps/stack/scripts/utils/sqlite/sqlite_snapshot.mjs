@@ -573,7 +573,9 @@ async function writePrivateManifest(path, manifest) {
 }
 
 async function readManifest(path, expectedIdentity = null) {
-  const metadata = await requireRegularFile('snapshot manifest', path);
+  const metadata = expectedIdentity
+    ? await assertSameRegularFile('snapshot manifest', path, expectedIdentity)
+    : await requireRegularFile('snapshot manifest', path);
   const identity = expectedIdentity ?? identityOf(metadata);
   if (!hasIdentity(metadata, identity)) {
     throw new Error(`snapshot manifest identity changed or was replaced: ${path}`);
@@ -698,16 +700,26 @@ async function copyWithSafePublication({
     await assertSameRegularFile('source', sourcePath, sourceIdentity);
     await beforeAccept?.();
 
-    const finalPublished = await inspectFinalDatabase(output.outputPath);
-    if (!hasIdentity(await lstat(output.outputPath), publishedIdentity)) {
-      throw new Error('published SQLite output identity changed during final verification');
+    await assertSameDirectory('disposable root', output.root);
+    await assertSameDirectory('output parent', output.outputParent);
+    let finalPublished;
+    try {
+      await assertSameRegularFile('published SQLite output', output.outputPath, publishedIdentity);
+      finalPublished = await inspectFinalDatabase(output.outputPath);
+      if (!hasIdentity(await lstat(output.outputPath), publishedIdentity)) {
+        throw new Error('published SQLite output identity changed during final verification');
+      }
+    } catch (error) {
+      await assertSameDirectory('disposable root', output.root);
+      await assertSameDirectory('output parent', output.outputParent);
+      throw error;
     }
     compareFingerprints(finalPublished.fingerprints, published.fingerprints);
     if (expectedFingerprints) compareFingerprints(finalPublished.fingerprints, expectedFingerprints);
-    const finalManifest = await readManifest(manifestTemporaryPath, manifestTemporaryIdentity);
-    compareFingerprints(finalPublished.fingerprints, finalManifest.manifest.fingerprints);
     await assertSameDirectory('disposable root', output.root);
     await assertSameDirectory('output parent', output.outputParent);
+    const finalManifest = await readManifest(manifestTemporaryPath, manifestTemporaryIdentity);
+    compareFingerprints(finalPublished.fingerprints, finalManifest.manifest.fingerprints);
     await assertSameRegularFile('source', sourcePath, sourceIdentity);
     await requireAbsent('output manifest', output.manifestPath);
     await assertSameRegularFile('manifest partial file', manifestTemporaryPath, manifestTemporaryIdentity);

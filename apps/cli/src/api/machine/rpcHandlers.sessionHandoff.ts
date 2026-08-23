@@ -35,6 +35,7 @@ import {
   type WorkspaceManifest,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { RpcHandler } from '../rpc/types';
 
 import {
   registerServerRoutedTransferResponder,
@@ -1307,6 +1308,7 @@ async function resolvePrepareWorkspaceReplicationMetadata(params: Readonly<{
 
 export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
   rpcHandlerManager: RpcHandlerManager;
+  wrapStartHandler?: (handler: RpcHandler<unknown, unknown>) => RpcHandler<unknown, unknown>;
   loadLocalSessionMetadata?: (sessionId: string) => Promise<SessionHandoffLocalMetadataSource | null>;
   loadSessionMetadata?: (sessionId: string) => Promise<Record<string, unknown> | null>;
   stopSessionForHandoff?: (sessionId: string) => Promise<'stopped' | 'already_inactive' | 'failed'>;
@@ -1925,7 +1927,7 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
     });
   }
 
-	  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_SESSION_HANDOFF_START, async (raw: unknown) => {
+	  const startHandler: RpcHandler<unknown, unknown> = async (raw: unknown) => {
 	    const parsed = SessionHandoffStartRequestSchema.safeParse(raw);
 	    if (!parsed.success) return invalidRequest();
 
@@ -2543,9 +2545,9 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
         error: errorMessage,
         handoffId,
         status,
-      } as const;
+	      } as const;
 	    }
-  });
+  };
 
   const handlePrepareTargetRaw = async (raw: unknown) => {
     const parsed = SessionHandoffPrepareTargetRequestSchema.safeParse(raw);
@@ -3555,4 +3557,8 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
 	    }
 	    return { ok: false, errorCode: 'not_found' } as const;
 	  });
+  rpcHandlerManager.registerHandler(
+    RPC_METHODS.DAEMON_SESSION_HANDOFF_START,
+    params.wrapStartHandler ? params.wrapStartHandler(startHandler) : startHandler,
+  );
 }

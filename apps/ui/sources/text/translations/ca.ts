@@ -694,6 +694,17 @@ export const ca: TranslationStructure = {
         permissions: 'Permisos',
         unreadSessions: 'Sessions sense llegir',
         updates: 'Activitat',
+        actionOperations: {
+            sections: { inProgress: 'En curs', needsAttention: 'Requereix atenció', recent: 'Recents' },
+            clearRecent: 'Neteja els recents',
+            status: { accepted: 'Acceptada', running: 'En curs', succeeded: 'Completada', failed: 'Ha fallat', cancelled: 'Cancel·lada', reconnecting: 'S’està reconnectant', unavailable: 'Estat no disponible', setupNeedsAttention: 'Sessió creada; la configuració requereix atenció' },
+            empty: 'Les accions de llarga durada apareixeran aquí.',
+            openHint: 'Obre els detalls de l’acció',
+            stop: 'Atura',
+            dismiss: 'Descarta',
+            stopFailed: 'No s’ha pogut aturar aquesta operació. Pot continuar en curs.',
+            detail: { status: 'Estat', progress: 'Progrés', error: 'Incidència', warning: 'Avís', result: 'Resultat', recoveryReference: 'Referència de recuperació' },
+        },
     },
 
     approvals: {
@@ -4494,6 +4505,8 @@ deps: {
         daemonRpcUnavailableBody:
             'Happier no pot connectar amb el dimoni en aquesta màquina. Pot estar fora de línia, iniciant-se o desconnectat del servidor.',
         launchStillPendingTitle: 'L’inici encara està en curs',
+        createdWithSetupIssueTitle: 'Sessió creada',
+        createdWithSetupIssueBody: 'La sessió s’ha creat, però la configuració inicial no ha acabat. Pots tornar-ho a provar des d’aquesta pantalla sense crear una altra sessió.',
         launchStillPendingBody:
             'Happier encara no ha confirmat la nova sessió. La sol·licitud d’inici continua desada. Torna-ho a provar per continuar el mateix inici sense crear una sessió duplicada.',
         connectedServiceSwitchUnavailable: {
@@ -5839,6 +5852,7 @@ deps: {
         browseSourceCodexConnectedServices: ({ service }: { service: string }) => `${service} connected services`,
         browseSourceClaudeDefault: "Configuració predeterminada de Claude",
         browseSourceOpenCodeDefault: "Servidor predeterminat d'OpenCode",
+        browseSourcePiDefault: "Directori per defecte de l'agent Pi",
         browseCandidates: "Sessions disponibles",
         browseNoMachines: "Encara no hi ha màquines disponibles per a sessions directes.",
         browseNoCandidates: "No s'han trobat sessions del proveïdor per a aquesta màquina i aquest proveïdor.",
