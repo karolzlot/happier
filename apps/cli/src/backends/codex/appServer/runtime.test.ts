@@ -192,7 +192,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '    }',
         '    if (msg.method === "initialized") continue;',
         '    if (msg.method === "config/read") {',
-        `        process.stdout.write(JSON.stringify({ id: msg.id, result: { config: { modelProvider: ${JSON.stringify(params.modelProvider ?? 'openai')} }, origins: {} } }) + "\\n");`,
+        `        process.stdout.write(JSON.stringify({ id: msg.id, result: { config: { model_provider: ${JSON.stringify(params.modelProvider ?? null)} }, origins: {} } }) + "\\n");`,
         '        continue;',
         '    }',
         '    if (msg.method === "thread/start") {',

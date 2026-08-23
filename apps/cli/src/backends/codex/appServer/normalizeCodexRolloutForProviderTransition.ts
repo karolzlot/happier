@@ -274,7 +274,11 @@ export async function prepareCodexRolloutForProviderResume(params: Readonly<{
     cwd: params.cwd,
   }));
   const config = readRecord(configReadResponse?.config);
-  const targetModelProvider = readNonBlankString(config?.modelProvider);
+  if (!config) return { status: 'target_provider_unavailable' };
+  const configuredModelProvider = config.model_provider;
+  const targetModelProvider = configuredModelProvider === null || configuredModelProvider === undefined
+    ? 'openai'
+    : readNonBlankString(configuredModelProvider);
   if (!targetModelProvider) return { status: 'target_provider_unavailable' };
 
   const normalizeRollout = params.normalizeRollout ?? normalizeCodexRolloutForProviderTransition;

@@ -257,12 +257,12 @@ describe('prepareCodexRolloutForProviderResume', () => {
 
   it('uses the effective app-server provider to normalize an existing rollout', async () => {
     const request = vi.fn(async () => ({
-      config: { modelProvider: 'openai' },
+      config: { model_provider: 'openrouter' },
     }));
     const normalizeRollout = vi.fn(async () => ({
       status: 'normalized' as const,
       sourceModelProvider: 'openrouter',
-      targetModelProvider: 'openai',
+      targetModelProvider: 'openrouter',
       clearedItemIds: 3,
       clearedReasoningContents: 1,
       clearedEncryptedReasoningItems: 0,
@@ -284,7 +284,7 @@ describe('prepareCodexRolloutForProviderResume', () => {
     })).resolves.toMatchObject({
       status: 'normalized',
       sourceModelProvider: 'openrouter',
-      targetModelProvider: 'openai',
+      targetModelProvider: 'openrouter',
     });
     expect(request).toHaveBeenCalledWith('config/read', {
       includeLayers: false,
@@ -292,18 +292,48 @@ describe('prepareCodexRolloutForProviderResume', () => {
     });
     expect(normalizeRollout).toHaveBeenCalledWith({
       rolloutPath: '/codex-home/sessions/rollout.jsonl',
+      targetModelProvider: 'openrouter',
+    });
+  });
+
+  it('uses Codex built-in openai provider when effective config omits model_provider', async () => {
+    const normalizeRollout = vi.fn(async () => ({
+      status: 'normalized' as const,
+      sourceModelProvider: 'openrouter',
+      targetModelProvider: 'openai',
+      clearedItemIds: 1,
+      clearedReasoningContents: 1,
+      clearedEncryptedReasoningItems: 0,
+    }));
+
+    await expect(prepareCodexRolloutForProviderResume({
+      client: { request: async () => ({ config: { model: 'gpt-5.6-sol', model_provider: null } }) },
+      vendorResumeId: 'thread-existing',
+      cwd: '/workspace',
+      resolveRolloutPath: async () => '/codex-home/sessions/rollout.jsonl',
+      normalizeRollout,
+    })).resolves.toMatchObject({
+      status: 'normalized',
+      sourceModelProvider: 'openrouter',
+      targetModelProvider: 'openai',
+    });
+    expect(normalizeRollout).toHaveBeenCalledWith({
+      rolloutPath: '/codex-home/sessions/rollout.jsonl',
       targetModelProvider: 'openai',
     });
   });
 
-  it('refuses to guess a target provider from model names or environment variables', async () => {
+  it('refuses to guess a target provider when config/read has no config object', async () => {
     const normalizeRollout = vi.fn();
 
     await expect(prepareCodexRolloutForProviderResume({
-      client: { request: async () => ({ config: { model: 'gpt-5.6-sol' } }) },
+      client: { request: async () => ({ config: null }) },
       vendorResumeId: 'thread-existing',
       cwd: '/workspace',
-      processEnv: { OPENROUTER_API_KEY: 'must-not-be-used-as-provenance' },
+      processEnv: {
+        HAPPIER_TEST_MODEL: 'gpt-5.6-sol',
+        HAPPIER_TEST_PROVIDER: 'openrouter',
+      },
       resolveRolloutPath: async () => '/codex-home/sessions/rollout.jsonl',
       normalizeRollout,
     })).resolves.toEqual({ status: 'target_provider_unavailable' });
