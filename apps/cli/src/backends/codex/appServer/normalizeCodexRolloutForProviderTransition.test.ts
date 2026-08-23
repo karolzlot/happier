@@ -2,11 +2,12 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CodexProviderTransitionRolloutError,
   normalizeCodexRolloutForProviderTransition,
+  prepareCodexRolloutForProviderResume,
 } from './normalizeCodexRolloutForProviderTransition';
 
 let root = '';
@@ -234,5 +235,78 @@ describe('normalizeCodexRolloutForProviderTransition', () => {
       targetModelProvider: 'openai',
     });
     await expect(readFile(rolloutPath, 'utf8')).resolves.toBe(original);
+  });
+});
+
+describe('prepareCodexRolloutForProviderResume', () => {
+  it('does not query app-server config when the native rollout is unavailable', async () => {
+    const request = vi.fn();
+    const normalizeRollout = vi.fn();
+
+    await expect(prepareCodexRolloutForProviderResume({
+      client: { request },
+      vendorResumeId: 'thread-missing',
+      cwd: '/workspace',
+      processEnv: { CODEX_HOME: '/missing' },
+      resolveRolloutPath: async () => null,
+      normalizeRollout,
+    })).resolves.toEqual({ status: 'rollout_not_found' });
+    expect(request).not.toHaveBeenCalled();
+    expect(normalizeRollout).not.toHaveBeenCalled();
+  });
+
+  it('uses the effective app-server provider to normalize an existing rollout', async () => {
+    const request = vi.fn(async () => ({
+      config: { modelProvider: 'openai' },
+    }));
+    const normalizeRollout = vi.fn(async () => ({
+      status: 'normalized' as const,
+      sourceModelProvider: 'openrouter',
+      targetModelProvider: 'openai',
+      clearedItemIds: 3,
+      clearedReasoningContents: 1,
+      clearedEncryptedReasoningItems: 0,
+    }));
+
+    await expect(prepareCodexRolloutForProviderResume({
+      client: { request },
+      vendorResumeId: 'thread-existing',
+      cwd: '/workspace',
+      processEnv: { CODEX_HOME: '/codex-home' },
+      resolveRolloutPath: async (input) => {
+        expect(input).toEqual({
+          vendorResumeId: 'thread-existing',
+          env: { CODEX_HOME: '/codex-home' },
+        });
+        return '/codex-home/sessions/rollout.jsonl';
+      },
+      normalizeRollout,
+    })).resolves.toMatchObject({
+      status: 'normalized',
+      sourceModelProvider: 'openrouter',
+      targetModelProvider: 'openai',
+    });
+    expect(request).toHaveBeenCalledWith('config/read', {
+      includeLayers: false,
+      cwd: '/workspace',
+    });
+    expect(normalizeRollout).toHaveBeenCalledWith({
+      rolloutPath: '/codex-home/sessions/rollout.jsonl',
+      targetModelProvider: 'openai',
+    });
+  });
+
+  it('refuses to guess a target provider from model names or environment variables', async () => {
+    const normalizeRollout = vi.fn();
+
+    await expect(prepareCodexRolloutForProviderResume({
+      client: { request: async () => ({ config: { model: 'gpt-5.6-sol' } }) },
+      vendorResumeId: 'thread-existing',
+      cwd: '/workspace',
+      processEnv: { OPENROUTER_API_KEY: 'must-not-be-used-as-provenance' },
+      resolveRolloutPath: async () => '/codex-home/sessions/rollout.jsonl',
+      normalizeRollout,
+    })).resolves.toEqual({ status: 'target_provider_unavailable' });
+    expect(normalizeRollout).not.toHaveBeenCalled();
   });
 });
