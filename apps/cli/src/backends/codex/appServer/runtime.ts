@@ -171,6 +171,7 @@ import { deriveUsageLimitRecoveryTiming } from '@/session/usageLimitRecoveryCont
 import { computeConnectedServiceAccessTokenFingerprint } from '@/daemon/connectedServices/refresh/credentialFreshness/tokenFingerprint';
 import type { ConnectedServiceRuntimeAuthFailureDaemonReport } from '@/daemon/connectedServices/runtimeAuth/reportConnectedServiceRuntimeAuthFailureToDaemon';
 import { isCommittedRuntimeAuthRecoveryDisposition } from '@/daemon/connectedServices/runtimeAuth/resolveRuntimeAuthRecoveryCommitDisposition';
+import { prepareCodexRolloutForProviderResume } from './normalizeCodexRolloutForProviderTransition';
 
 type CodexAppServerStartOrLoadOptions = Readonly<{
     resumeId?: string | null;
@@ -3906,6 +3907,31 @@ export function createCodexAppServerRuntime(params: Readonly<{
             allowOversizedResponseRecovery?: boolean;
         }>,
     ): Promise<Readonly<{ nextThreadId: string; response: unknown }>> => {
+        try {
+            const providerTransition = await prepareCodexRolloutForProviderResume({
+                client,
+                vendorResumeId: requestedThreadId,
+                cwd: params.directory,
+                processEnv: runtimeEnv,
+            });
+            if (providerTransition.status === 'normalized') {
+                logger.debug('[codex-app-server] Normalized native rollout for provider transition', {
+                    threadId: requestedThreadId,
+                    sourceModelProvider: providerTransition.sourceModelProvider,
+                    targetModelProvider: providerTransition.targetModelProvider,
+                    clearedItemIds: providerTransition.clearedItemIds,
+                    clearedReasoningContents: providerTransition.clearedReasoningContents,
+                    clearedEncryptedReasoningItems: providerTransition.clearedEncryptedReasoningItems,
+                });
+            }
+        } catch (error) {
+            if (!isCodexAppServerMethodNotFoundError(error)) {
+                throw error;
+            }
+            logger.debug('[codex-app-server] Skipping provider-transition rollout normalization because config/read is unavailable', {
+                threadId: requestedThreadId,
+            });
+        }
         historyBoundary.beginHydration();
         const requestOptions = options.allowOversizedResponseRecovery
             ? { timeoutMs: readCodexAppServerResumeRecoveryTimeoutMs(runtimeEnv) }
