@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, chown, open, readFile, rename, stat, unlink } from 'node:fs/promises';
 
+import { resolveCodexNativeSessionLogPath } from '../utils/resolveCodexNativeSessionLogPath';
+
 type JsonRecord = Record<string, unknown>;
 
 type ProviderTransitionCounters = {
@@ -238,4 +240,46 @@ export async function normalizeCodexRolloutForProviderTransition(params: Readonl
     targetModelProvider,
     ...counters,
   };
+}
+
+export type PrepareCodexRolloutForProviderResumeResult =
+  | Readonly<{ status: 'rollout_not_found' }>
+  | Readonly<{ status: 'target_provider_unavailable' }>
+  | CodexProviderTransitionRolloutResult;
+
+type CodexAppServerConfigReader = Readonly<{
+  request: (method: string, params?: unknown) => Promise<unknown>;
+}>;
+
+type ResolveCodexRolloutPath = typeof resolveCodexNativeSessionLogPath;
+type NormalizeCodexRollout = typeof normalizeCodexRolloutForProviderTransition;
+
+export async function prepareCodexRolloutForProviderResume(params: Readonly<{
+  client: CodexAppServerConfigReader;
+  vendorResumeId: string;
+  cwd: string;
+  processEnv?: NodeJS.ProcessEnv;
+  resolveRolloutPath?: ResolveCodexRolloutPath;
+  normalizeRollout?: NormalizeCodexRollout;
+}>): Promise<PrepareCodexRolloutForProviderResumeResult> {
+  const resolveRolloutPath = params.resolveRolloutPath ?? resolveCodexNativeSessionLogPath;
+  const rolloutPath = await resolveRolloutPath({
+    vendorResumeId: params.vendorResumeId,
+    env: params.processEnv ?? process.env,
+  });
+  if (!rolloutPath) return { status: 'rollout_not_found' };
+
+  const configReadResponse = readRecord(await params.client.request('config/read', {
+    includeLayers: false,
+    cwd: params.cwd,
+  }));
+  const config = readRecord(configReadResponse?.config);
+  const targetModelProvider = readNonBlankString(config?.modelProvider);
+  if (!targetModelProvider) return { status: 'target_provider_unavailable' };
+
+  const normalizeRollout = params.normalizeRollout ?? normalizeCodexRolloutForProviderTransition;
+  return await normalizeRollout({
+    rolloutPath,
+    targetModelProvider,
+  });
 }
