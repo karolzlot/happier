@@ -4,6 +4,9 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Credentials } from '@/persistence';
+import { AIBackendProfileSchema } from '@happier-dev/protocol';
+
 const {
   withCodexAppServerClientMock,
   readCodexAppServerSessionControlsMock,
@@ -22,6 +25,50 @@ vi.mock('@/backends/codex/appServer/sessionControlsMetadata', () => ({
 
 import { probeAgentModelsBestEffort } from './agentModelsProbe';
 import { resetAgentModelsProbeCacheForTests } from './agentModelsProbe';
+
+function createProfileProbeContext() {
+  const profile = AIBackendProfileSchema.parse({
+    id: 'openrouter-free',
+    name: 'Codex OpenRouter free',
+    envVarRequirements: [
+      { name: 'OPENROUTER_API_KEY', kind: 'secret', required: true },
+    ],
+    environmentVariables: [{ name: 'OPENROUTER_API_KEY', value: '' }],
+    compatibilityByTargetKey: { 'agent:codex': true },
+    isBuiltIn: false,
+    createdAt: 0,
+    updatedAt: 0,
+    version: '1.0.0',
+  });
+  const credentials: Credentials = {
+    token: 'token-test',
+    encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
+  };
+  return {
+    profile,
+    credentials,
+    accountSettings: {
+      codexBackendMode: 'appServer',
+      profiles: [profile],
+      secrets: [
+        {
+          id: 'openrouter-secret',
+          name: 'OpenRouter',
+          kind: 'apiKey',
+          encryptedValue: {
+            _isSecretValue: true,
+            value: 'saved-openrouter-key',
+          },
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      secretBindingsByProfileId: {
+        [profile.id]: { OPENROUTER_API_KEY: 'openrouter-secret' },
+      },
+    },
+  };
+}
 
 describe('probeAgentModelsBestEffort (codex app-server)', () => {
   let previousCodexHome: string | undefined;
@@ -44,6 +91,65 @@ describe('probeAgentModelsBestEffort (codex app-server)', () => {
     if (tempCodexHome) {
       rmSync(tempCodexHome, { recursive: true, force: true });
     }
+  });
+
+  it('publishes only provider-listed models for a selected profile', async () => {
+    withCodexAppServerClientMock.mockImplementation(async ({ run }: any) => (
+      await run({ request: vi.fn() })
+    ));
+    readCodexAppServerSessionControlsMock.mockResolvedValue({
+      availableModes: [],
+      currentModeId: 'default',
+      availableModels: [
+        { id: 'free/newest', name: 'Newest free' },
+        { id: 'free/older', name: 'Older free' },
+      ],
+      currentModelId: 'free/newest',
+      configOptions: [],
+    });
+    const { profile, credentials, accountSettings } =
+      createProfileProbeContext();
+
+    const result = await probeAgentModelsBestEffort({
+      agentId: 'codex',
+      cwd: '/repo-profile',
+      profileId: profile.id,
+      accountSettings,
+      credentials,
+    });
+
+    expect(result).toEqual({
+      provider: 'codex',
+      availableModels: [
+        { id: 'free/newest', name: 'Newest free' },
+        { id: 'free/older', name: 'Older free' },
+      ],
+      supportsFreeform: false,
+      source: 'dynamic',
+    });
+  });
+
+  it('does not replace a failed selected-profile probe with static models', async () => {
+    withCodexAppServerClientMock.mockRejectedValue(
+      new Error('profile provider unavailable'),
+    );
+    const { profile, credentials, accountSettings } =
+      createProfileProbeContext();
+
+    const result = await probeAgentModelsBestEffort({
+      agentId: 'codex',
+      cwd: '/repo-profile-failure',
+      profileId: profile.id,
+      accountSettings,
+      credentials,
+    });
+
+    expect(result).toEqual({
+      provider: 'codex',
+      availableModels: [],
+      supportsFreeform: false,
+      source: 'static',
+    });
   });
 
   it('retries a transient Codex app-server failure within the same probe so the first result is rich', async () => {
