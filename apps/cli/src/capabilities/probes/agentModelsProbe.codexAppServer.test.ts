@@ -129,6 +129,47 @@ describe('probeAgentModelsBestEffort (codex app-server)', () => {
     });
   });
 
+  it('re-reads the Codex catalog after an external refresh instead of retaining the generic success cache', async () => {
+    withCodexAppServerClientMock.mockImplementation(async ({ run }: any) => (
+      await run({ request: vi.fn() })
+    ));
+    readCodexAppServerSessionControlsMock
+      .mockResolvedValueOnce({
+        availableModes: [],
+        currentModeId: 'default',
+        availableModels: [{ id: 'free/old', name: 'Old free model' }],
+        currentModelId: 'free/old',
+        configOptions: [],
+      })
+      .mockResolvedValueOnce({
+        availableModes: [],
+        currentModeId: 'default',
+        availableModels: [{ id: 'free/new', name: 'New free model' }],
+        currentModelId: 'free/new',
+        configOptions: [],
+      });
+    const { profile, credentials, accountSettings } =
+      createProfileProbeContext();
+    const params = {
+      agentId: 'codex' as const,
+      cwd: '/repo-profile-refresh',
+      profileId: profile.id,
+      accountSettings,
+      credentials,
+    };
+
+    const beforeRefresh = await probeAgentModelsBestEffort(params);
+    const afterRefresh = await probeAgentModelsBestEffort(params);
+
+    expect(beforeRefresh.availableModels.map((model) => model.id)).toEqual([
+      'free/old',
+    ]);
+    expect(afterRefresh.availableModels.map((model) => model.id)).toEqual([
+      'free/new',
+    ]);
+    expect(readCodexAppServerSessionControlsMock).toHaveBeenCalledTimes(2);
+  });
+
   it('does not replace a failed selected-profile probe with static models', async () => {
     withCodexAppServerClientMock.mockRejectedValue(
       new Error('profile provider unavailable'),
