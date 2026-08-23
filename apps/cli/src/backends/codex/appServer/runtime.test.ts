@@ -168,6 +168,7 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
     oversizedResumePayloadChars?: number;
     omitTurnStartedForPrompt?: string;
     omitTurnCompletedForPrompt?: string;
+    modelProvider?: string;
 }>): Promise<string> {
     const scriptPath = join(params.dir, 'fake-codex-app-server.mjs');
     const script = [
@@ -190,6 +191,10 @@ async function writeFakeCodexAppServerScript(params: Readonly<{
         '        continue;',
         '    }',
         '    if (msg.method === "initialized") continue;',
+        '    if (msg.method === "config/read") {',
+        `        process.stdout.write(JSON.stringify({ id: msg.id, result: { config: { modelProvider: ${JSON.stringify(params.modelProvider ?? 'openai')} }, origins: {} } }) + "\\n");`,
+        '        continue;',
+        '    }',
         '    if (msg.method === "thread/start") {',
         `        if (${JSON.stringify(params.rejectPermissionsProfile === true)} && msg.params?.permissions) {`,
         '            process.stdout.write(JSON.stringify({ id: msg.id, error: { code: -32602, message: "invalid params: permissions unsupported" } }) + "\\n");',
@@ -1616,6 +1621,7 @@ describe('createCodexAppServerRuntime', () => {
             rpcTimeoutMs?: number;
             startupRpcTimeoutMs?: number;
             resumeRecoveryTimeoutMs?: number;
+            modelProvider?: string;
         }> = {},
     ): Promise<{
         root: string;
@@ -1666,6 +1672,7 @@ describe('createCodexAppServerRuntime', () => {
             oversizedResumePayloadChars: options.oversizedResumePayloadChars,
             omitTurnStartedForPrompt: options.omitTurnStartedForPrompt,
             omitTurnCompletedForPrompt: options.omitTurnCompletedForPrompt,
+            modelProvider: options.modelProvider,
         });
         envScope.patch({
             HAPPIER_CODEX_APP_SERVER_BIN: fakeAppServer,
@@ -1954,6 +1961,78 @@ describe('createCodexAppServerRuntime', () => {
                 }),
             ]),
         );
+    });
+
+    it('normalizes provider-owned rollout fields before a cross-provider resume', async () => {
+        const vendorResumeId = '019e7cfd-2e3d-74f0-be76-b7459424f0a8';
+        const { root, requestLogPath } = await createRuntimeFixture(
+            'happier-codex-app-server-runtime-provider-transition-',
+            { modelProvider: 'openai' },
+        );
+        const rolloutDir = join(root, 'codex-home', 'sessions', '2026', '08', '23');
+        const rolloutPath = join(
+            rolloutDir,
+            `rollout-2026-08-23T20-00-00-${vendorResumeId}.jsonl`,
+        );
+        await mkdir(rolloutDir, { recursive: true });
+        await writeFile(rolloutPath, [
+            JSON.stringify({
+                timestamp: '2026-08-23T20:00:00.000Z',
+                type: 'session_meta',
+                payload: { id: vendorResumeId, model_provider: 'openrouter' },
+            }),
+            JSON.stringify({
+                timestamp: '2026-08-23T20:00:01.000Z',
+                type: 'response_item',
+                payload: {
+                    id: 'rs_openrouter',
+                    type: 'reasoning',
+                    summary: [],
+                    content: [{ type: 'reasoning_text', text: 'provider-owned reasoning' }],
+                    encrypted_content: null,
+                },
+            }),
+            JSON.stringify({
+                timestamp: '2026-08-23T20:00:02.000Z',
+                type: 'response_item',
+                payload: {
+                    id: 'msg_openrouter',
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'visible answer' }],
+                },
+            }),
+            '',
+        ].join('\n'));
+
+        const runtime = createCodexAppServerRuntime({
+            directory: root,
+            onThinkingChange: vi.fn(),
+            session: { updateMetadata: vi.fn() } as any,
+            permissionMode: 'read-only',
+        });
+
+        await runtime.startOrLoad({ resumeId: vendorResumeId, importHistory: false });
+
+        const requestLog = await readRequestLog(requestLogPath);
+        const configReadIndex = requestLog.findIndex((entry) => entry.method === 'config/read');
+        const resumeIndex = requestLog.findIndex((entry) => entry.method === 'thread/resume');
+        expect(configReadIndex).toBeGreaterThanOrEqual(0);
+        expect(resumeIndex).toBeGreaterThan(configReadIndex);
+        const records = (await readFile(rolloutPath, 'utf8'))
+            .trimEnd()
+            .split('\n')
+            .map((entry) => JSON.parse(entry));
+        expect(records[0].payload.model_provider).toBe('openai');
+        expect(records[1].payload).toMatchObject({
+            type: 'reasoning',
+            summary: [],
+            content: [],
+            encrypted_content: null,
+        });
+        expect(records[1].payload).not.toHaveProperty('id');
+        expect(records[2].payload).not.toHaveProperty('id');
+        expect(records[2].payload.content[0].text).toBe('visible answer');
     });
 
     it('rejects an explicitly different resumed thread before publishing either identity', async () => {
