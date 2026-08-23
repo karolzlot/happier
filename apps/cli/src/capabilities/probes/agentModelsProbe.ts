@@ -187,22 +187,28 @@ function normalizeProbeModel(modelRaw: unknown): ProbedAgentModel | null {
   };
 }
 
-function normalizeDynamicModels(modelsRaw: unknown): ProbedAgentModel[] | null {
+function normalizeDynamicModels(
+  modelsRaw: unknown,
+  options: Readonly<{ includeDefault?: boolean }> = {},
+): ProbedAgentModel[] | null {
   if (!Array.isArray(modelsRaw)) return null;
   // `null` is the adapter's failure signal. An actual empty array is a successful observation
-  // with no provider-listed rows, so preserve that distinction and suppress stale static
-  // membership while retaining Happier's explicit provider-default choice.
-  if (modelsRaw.length === 0) return [{ id: 'default', name: 'Default' }];
+  // with no provider-listed rows, so preserve that distinction and suppress stale membership.
+  if (modelsRaw.length === 0) {
+    return options.includeDefault === false ? [] : [{ id: 'default', name: 'Default' }];
+  }
   const parsed = modelsRaw
     .map((model) => normalizeProbeModel(model))
     .filter((model): model is ProbedAgentModel => model !== null);
 
   if (parsed.length === 0) return null;
 
-  const withDefault: ProbedAgentModel[] = [
-    { id: 'default', name: 'Default' },
-    ...parsed.filter((m) => m.id !== 'default'),
-  ];
+  const withDefault: ProbedAgentModel[] = options.includeDefault === false
+    ? parsed
+    : [
+        { id: 'default', name: 'Default' },
+        ...parsed.filter((m) => m.id !== 'default'),
+      ];
 
   const seen = new Set<string>();
   return withDefault.filter((m) => {
@@ -468,7 +474,10 @@ export async function probeAgentModelsBestEffort(params: {
     const nowMs2 = Date.now();
     if (!usesProviderOwnedCache && cached2?.kind === 'success' && agentModelsProbeCache.isFresh(cached2, nowMs2)) return cached2.value;
 
-    const fallback = buildStatic(params.agentId);
+    const staticFallback = buildStatic(params.agentId);
+    const fallback = profileId
+      ? { ...staticFallback, availableModels: [] }
+      : staticFallback;
     const modelConfig = getAgentModelConfig(params.agentId);
     if (modelConfig.dynamicProbe === 'static-only') {
       if (!usesProviderOwnedCache) {
@@ -525,7 +534,7 @@ export async function probeAgentModelsBestEffort(params: {
           connectedServices: params.connectedServices ?? null,
           processEnv: params.processEnv,
         }).catch(() => null);
-        return normalizeDynamicModels(modelsRaw);
+        return normalizeDynamicModels(modelsRaw, { includeDefault: profileId === null });
       };
 
       let models = await probePreflightModelsOnce();
