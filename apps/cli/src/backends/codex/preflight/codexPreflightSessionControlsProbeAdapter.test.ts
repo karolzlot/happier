@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { reloadConfiguration } from '@/configuration';
+import type { Credentials } from '@/persistence';
+import { AIBackendProfileSchema } from '@happier-dev/protocol';
 
 import { codexPreflightSessionControlsProbeAdapter } from './codexPreflightSessionControlsProbeAdapter';
 
@@ -22,6 +24,7 @@ const envKeys = [
     'HAPPIER_HOME_DIR',
     'OPENAI_API_KEY',
     'CODEX_API_KEY',
+    'OPENROUTER_API_KEY',
     'CODEX_HOME',
     'CODEX_SQLITE_HOME',
 ] as const;
@@ -128,7 +131,94 @@ describe('codexPreflightSessionControlsProbeAdapter', () => {
         expect(JSON.parse(readFileSync(captureFile, 'utf8'))).toEqual({
             CODEX_HOME: codexHome,
             CODEX_SQLITE_HOME: codexHome,
+            OPENROUTER_API_KEY: null,
             CODEX_AUTH_FILE_PRESENT: false,
         });
+    });
+
+    it('materializes the selected profile saved secret before spawning Codex app-server', async () => {
+        tempDir = makeTempDir('happier-codex-preflight-profile-');
+
+        const captureFile = join(tempDir, 'captured-env.json');
+        process.env.HAPPIER_CODEX_APP_SERVER_BIN = fileURLToPath(new URL('./__fixtures__/fakeCodexAppServer.mjs', import.meta.url));
+        process.env.HAPPIER_FAKE_CODEX_APP_SERVER_DELAY_MS = '1';
+        process.env.HAPPIER_FAKE_CODEX_APP_SERVER_ENV_CAPTURE_FILE = captureFile;
+
+        const profile = AIBackendProfileSchema.parse({
+            id: 'openrouter-free',
+            name: 'Codex OpenRouter free',
+            envVarRequirements: [{ name: 'OPENROUTER_API_KEY', kind: 'secret', required: true }],
+            environmentVariables: [{ name: 'OPENROUTER_API_KEY', value: '' }],
+            compatibilityByTargetKey: { 'agent:codex': true },
+            isBuiltIn: false,
+            createdAt: 0,
+            updatedAt: 0,
+            version: '1.0.0',
+        });
+        const credentials: Credentials = {
+            token: 'token-test',
+            encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
+        };
+
+        const raw = await codexPreflightSessionControlsProbeAdapter.probeModelsRaw?.({
+            cwd: tempDir,
+            timeoutMs: 2_000,
+            backendTarget: undefined,
+            profileId: profile.id,
+            accountSettings: {
+                profiles: [profile],
+                secrets: [
+                    {
+                        id: 'openrouter-secret',
+                        name: 'OpenRouter',
+                        kind: 'apiKey',
+                        encryptedValue: { _isSecretValue: true, value: 'saved-openrouter-key' },
+                        createdAt: 0,
+                        updatedAt: 0,
+                    },
+                ],
+                secretBindingsByProfileId: {
+                    [profile.id]: { OPENROUTER_API_KEY: 'openrouter-secret' },
+                },
+            },
+            credentials,
+            processEnv: {
+                ...process.env,
+                OPENROUTER_API_KEY: undefined,
+            },
+        });
+
+        expect(raw).toEqual(expect.any(Array));
+        expect(JSON.parse(readFileSync(captureFile, 'utf8'))).toMatchObject({
+            OPENROUTER_API_KEY: 'saved-openrouter-key',
+        });
+    });
+
+    it('fails closed before spawning app-server when the selected profile cannot be resolved', async () => {
+        tempDir = makeTempDir('happier-codex-preflight-missing-profile-');
+
+        const captureFile = join(tempDir, 'captured-env.json');
+        process.env.HAPPIER_CODEX_APP_SERVER_BIN = fileURLToPath(new URL('./__fixtures__/fakeCodexAppServer.mjs', import.meta.url));
+        process.env.HAPPIER_FAKE_CODEX_APP_SERVER_DELAY_MS = '1';
+        process.env.HAPPIER_FAKE_CODEX_APP_SERVER_ENV_CAPTURE_FILE = captureFile;
+
+        const credentials: Credentials = {
+            token: 'token-test',
+            encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
+        };
+
+        await expect(codexPreflightSessionControlsProbeAdapter.probeModelsRaw?.({
+            cwd: tempDir,
+            timeoutMs: 2_000,
+            backendTarget: undefined,
+            profileId: 'missing-profile',
+            accountSettings: { profiles: [] },
+            credentials,
+            processEnv: {
+                ...process.env,
+                OPENROUTER_API_KEY: 'ambient-key-that-must-not-be-used',
+            },
+        })).rejects.toThrow(/Unknown profile/);
+        expect(existsSync(captureFile)).toBe(false);
     });
 });
