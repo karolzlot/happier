@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,28 @@ import { codexPreflightSessionControlsProbeAdapter } from './codexPreflightSessi
 
 function makeTempDir(prefix: string): string {
     return mkdtempSync(join(tmpdir(), prefix));
+}
+
+function writeReadyOpenRouterProfile(codexHome: string): void {
+    mkdirSync(codexHome, { recursive: true });
+    const catalogPath = join(codexHome, 'openrouter-models.json');
+    writeFileSync(catalogPath, JSON.stringify({ models: [{ slug: 'free/test' }] }), 'utf8');
+    writeFileSync(
+        join(codexHome, 'happier-openrouter.config.toml'),
+        [
+            'model = "free/test"',
+            'model_provider = "openrouter"',
+            `model_catalog_json = ${JSON.stringify(catalogPath)}`,
+            '',
+            '[model_providers.openrouter]',
+            'name = "OpenRouter"',
+            'base_url = "https://openrouter.ai/api/v1"',
+            'env_key = "OPENROUTER_API_KEY"',
+            'wire_api = "responses"',
+            '',
+        ].join('\n'),
+        'utf8',
+    );
 }
 
 const envKeys = [
@@ -138,6 +160,8 @@ describe('codexPreflightSessionControlsProbeAdapter', () => {
 
     it('materializes the selected profile saved secret before spawning Codex app-server', async () => {
         tempDir = makeTempDir('happier-codex-preflight-profile-');
+        const codexHome = join(tempDir, 'codex-home');
+        writeReadyOpenRouterProfile(codexHome);
 
         const captureFile = join(tempDir, 'captured-env.json');
         process.env.HAPPIER_CODEX_APP_SERVER_BIN = fileURLToPath(new URL('./__fixtures__/fakeCodexAppServer.mjs', import.meta.url));
@@ -184,12 +208,14 @@ describe('codexPreflightSessionControlsProbeAdapter', () => {
             credentials,
             processEnv: {
                 ...process.env,
+                CODEX_HOME: codexHome,
                 OPENROUTER_API_KEY: undefined,
             },
         });
 
         expect(raw).toEqual(expect.any(Array));
         expect(JSON.parse(readFileSync(captureFile, 'utf8'))).toMatchObject({
+            CODEX_HOME: codexHome,
             OPENROUTER_API_KEY: 'saved-openrouter-key',
         });
     });
