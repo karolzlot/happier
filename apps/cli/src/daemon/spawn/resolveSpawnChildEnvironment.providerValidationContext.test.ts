@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { SPAWN_SESSION_ERROR_CODES } from '@/rpc/handlers/registerSessionHandlers';
 import { resolveSpawnChildEnvironment } from './resolveSpawnChildEnvironment';
 
 describe('resolveSpawnChildEnvironment provider validation context', () => {
@@ -58,7 +59,7 @@ describe('resolveSpawnChildEnvironment provider validation context', () => {
 
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('Expected OpenRouter configuration refusal');
-      expect(result.errorCode).toBe('spawn_validation_failed');
+      expect(result.errorCode).toBe(SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED);
       expect(result.errorMessage).toContain('nie ma jeszcze profilu OpenRoutera');
       expect(result.errorMessage).not.toContain('saved-secret');
     } finally {

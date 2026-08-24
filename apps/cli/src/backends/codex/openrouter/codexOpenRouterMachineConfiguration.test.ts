@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  CodexOpenRouterConfigurationError,
   configureCodexOpenRouterMachine,
   inspectCodexOpenRouterMachineConfiguration,
   refreshCodexOpenRouterCatalogIfStale,
@@ -142,7 +141,7 @@ describe('Codex OpenRouter machine configuration', () => {
         processEnv: { CODEX_HOME: codexHome },
         resolveCodexVersion: async () => '0.80.9',
       }),
-    ).rejects.toMatchObject<CodexOpenRouterConfigurationError>({
+    ).rejects.toMatchObject({
       code: 'openrouter-profile-contains-plaintext-secret',
     });
     await expect(readFile(profilePath, 'utf8')).resolves.toBe(unsafeProfile);
