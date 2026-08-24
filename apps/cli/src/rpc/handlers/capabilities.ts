@@ -41,9 +41,15 @@ import { configuration } from '@/configuration';
 import { createConnectedServiceMaterializationIdentity } from '@/daemon/connectedServices/materialize/createConnectedServiceMaterializationIdentity';
 import { resolveConnectedServiceAuthForSpawn } from '@/daemon/connectedServices/resolveConnectedServiceAuthForSpawn';
 import { HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY } from '@/daemon/connectedServices/connectedServiceChildEnvironment';
+import {
+    CodexOpenRouterConfigurationError,
+    configureCodexOpenRouterMachine,
+    inspectCodexOpenRouterMachineConfiguration,
+} from '@/backends/codex/openrouter/codexOpenRouterMachineConfiguration';
 
 const DEFAULT_PROBE_MODELS_TIMEOUT_MS = 30_000;
 type CliProbeMethod = 'probeModels' | 'probeModes' | 'probeConfigOptions';
+type CodexOpenRouterMachineMethod = 'probeOpenRouterConfiguration' | 'configureOpenRouter';
 
 function titleCase(value: string): string {
     if (!value) return value;
@@ -343,6 +349,40 @@ async function invokeCliProbeMethod(
     }
 }
 
+async function invokeCodexOpenRouterMachineMethod(
+    method: CodexOpenRouterMachineMethod,
+    params?: Record<string, unknown>,
+): Promise<CapabilitiesInvokeResponse> {
+    if (method === 'probeOpenRouterConfiguration') {
+        const result = await inspectCodexOpenRouterMachineConfiguration({ processEnv: process.env });
+        return { ok: true, result };
+    }
+    if (params?.confirm !== true) {
+        return {
+            ok: false,
+            error: {
+                code: 'openrouter-configuration-confirmation-required',
+                message: 'Konfiguracja OpenRoutera wymaga jawnego potwierdzenia.',
+            },
+        };
+    }
+    try {
+        const result = await configureCodexOpenRouterMachine({ processEnv: process.env });
+        return { ok: true, result };
+    } catch (error) {
+        if (error instanceof CodexOpenRouterConfigurationError) {
+            return { ok: false, error: { code: error.code, message: error.message } };
+        }
+        return {
+            ok: false,
+            error: {
+                code: 'openrouter-configuration-failed',
+                message: 'Nie udało się skonfigurować OpenRoutera na tej maszynie.',
+            },
+        };
+    }
+}
+
 function createGenericCliCapability(agentId: AgentCatalogEntry['id']): Capability {
     return {
         descriptor: {
@@ -354,6 +394,12 @@ function createGenericCliCapability(agentId: AgentCatalogEntry['id']): Capabilit
                 probeModels: { title: 'Probe models' },
                 probeModes: { title: 'Probe modes' },
                 probeConfigOptions: { title: 'Probe config options' },
+                ...(agentId === 'codex'
+                    ? {
+                        probeOpenRouterConfiguration: { title: 'Probe OpenRouter configuration' },
+                        configureOpenRouter: { title: 'Configure OpenRouter' },
+                    }
+                    : {}),
             },
         },
         detect: async ({ request, context }) => {
@@ -373,6 +419,12 @@ function createGenericCliCapability(agentId: AgentCatalogEntry['id']): Capabilit
             if (method === 'probeConfigOptions') {
                 return invokeCliProbeMethod(agentId, method, params);
             }
+            if (
+                agentId === 'codex' &&
+                (method === 'probeOpenRouterConfiguration' || method === 'configureOpenRouter')
+            ) {
+                return invokeCodexOpenRouterMachineMethod(method, params);
+            }
             return { ok: false, error: { message: `Unsupported method: ${method}`, code: 'unsupported-method' } };
         },
     };
@@ -388,6 +440,12 @@ function augmentCliCapabilityWithProbeModels(cap: Capability, agentId: AgentCata
         ...(existingMethods.probeModes ? {} : { probeModes: { title: 'Probe modes' } }),
         ...(existingMethods.probeConfigOptions ? {} : { probeConfigOptions: { title: 'Probe config options' } }),
         ...(existingMethods.install ? {} : { install: { title: 'Install' } }),
+        ...(agentId === 'codex' && !existingMethods.probeOpenRouterConfiguration
+            ? { probeOpenRouterConfiguration: { title: 'Probe OpenRouter configuration' } }
+            : {}),
+        ...(agentId === 'codex' && !existingMethods.configureOpenRouter
+            ? { configureOpenRouter: { title: 'Configure OpenRouter' } }
+            : {}),
     };
 
     const baseInvoke = cap.invoke;
@@ -404,6 +462,12 @@ function augmentCliCapabilityWithProbeModels(cap: Capability, agentId: AgentCata
         }
         if (method === 'probeConfigOptions') {
             return invokeCliProbeMethod(agentId, method, params);
+        }
+        if (
+            agentId === 'codex' &&
+            (method === 'probeOpenRouterConfiguration' || method === 'configureOpenRouter')
+        ) {
+            return invokeCodexOpenRouterMachineMethod(method, params);
         }
         if (baseInvoke) return await baseInvoke({ method, params });
         return { ok: false, error: { message: `Unsupported method: ${method}`, code: 'unsupported-method' } };

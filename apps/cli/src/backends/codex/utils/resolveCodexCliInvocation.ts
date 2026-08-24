@@ -7,6 +7,7 @@ import { resolveWindowsCommandPath } from '@happier-dev/cli-common/process';
 import { requireJavaScriptRuntimeExecutable } from '@/runtime/js/requireJavaScriptRuntimeExecutable';
 import { requireProviderCliCommand } from '@/runtime/managedTools/requireProviderCliCommand';
 import { isBun } from '@/utils/runtime';
+import { prependCodexOpenRouterProfileArgs } from '../openrouter/openrouterProfile';
 
 const JAVA_SCRIPT_ENTRYPOINT_EXTENSION = /\.(?:c?js|mjs)$/i;
 const JAVA_SCRIPT_SHEBANG = /^#!.*\b(?:env\s+)?(?:node|bun)(?:\s|$)/;
@@ -92,12 +93,13 @@ export async function resolveCodexCliInvocation(params: Readonly<{
 }>): Promise<Readonly<{ command: string; args: string[] }>> {
     const processEnv = params.processEnv ?? process.env;
     const cwd = params.cwd ?? process.cwd();
+    const args = prependCodexOpenRouterProfileArgs(params.args, processEnv);
     const command =
         resolveCodexOverrideCommand(processEnv, params.overrideEnvVarKeys ?? [], cwd)
         ?? requireProviderCliCommand('codex', { processEnv });
 
     if (!isJavaScriptBackedCodexCommand(command)) {
-        return { command, args: [...params.args] };
+        return { command, args };
     }
 
     const javaScriptRuntime = await requireJavaScriptRuntimeExecutable({
@@ -108,6 +110,6 @@ export async function resolveCodexCliInvocation(params: Readonly<{
 
     return {
         command: javaScriptRuntime,
-        args: [command, ...params.args],
+        args: [command, ...args],
     };
 }

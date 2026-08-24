@@ -19,6 +19,10 @@ import {
 } from '@/agent/runtime/sessionConnectedServiceMaterializationIdentityEnv';
 import { HAPPIER_SPAWN_EXPLICIT_ENV_KEYS_JSON_ENV_VAR } from './spawnExplicitEnvKeysMarker';
 import type { ConnectedServicesMaterializationDiagnostic } from '@/daemon/connectedServices/materialize/providerMaterializerTypes';
+import {
+  inspectCodexOpenRouterMachineConfiguration,
+} from '@/backends/codex/openrouter/codexOpenRouterMachineConfiguration';
+import { markCodexOpenRouterProfileRequested } from '@/backends/codex/openrouter/openrouterProfile';
 
 function sanitizeCodexAcpFallbackDetail(detail: string): string {
   const normalized = detail.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -152,6 +156,22 @@ export async function resolveSpawnChildEnvironment(params: {
   );
 
   let extraEnv = { ...expandedProfileEnv, ...expandedAuthEnv };
+  const usesOpenRouterProfile =
+    agentId === 'codex' &&
+    params.options.profileId !== undefined &&
+    Object.hasOwn(profileEnv, 'OPENROUTER_API_KEY');
+  if (usesOpenRouterProfile) {
+    markCodexOpenRouterProfileRequested(extraEnv);
+    // codex-acp does not expose Codex's global `--profile` flag. The managed
+    // OpenRouter config is deliberately an isolated Codex profile, so use the
+    // app-server path which can select it rather than silently launching ACP
+    // with the machine's unrelated base config.
+    if (effectiveCodexBackendMode === 'acp') {
+      effectiveCodexBackendMode = 'appServer';
+      effectiveExperimentalCodexAcp = undefined;
+      params.logInfo('[DAEMON RUN] OpenRouter profile uses the Codex app-server backend.');
+    }
+  }
   params.logDebug(
     `[DAEMON RUN] Final environment variable keys (${Object.keys(extraEnv).length}): ${Object.keys(extraEnv).join(', ')}`,
   );
@@ -169,6 +189,23 @@ export async function resolveSpawnChildEnvironment(params: {
       cleanupOnExit,
       ...(materializationDiagnostics ? { materializationDiagnostics } : {}),
     };
+  }
+
+  if (usesOpenRouterProfile) {
+    const configuration = await inspectCodexOpenRouterMachineConfiguration({
+      processEnv: { ...params.processEnv, ...extraEnv },
+    });
+    if (configuration.state !== 'ready') {
+      params.logWarn(`[DAEMON RUN] ${configuration.message}`);
+      return {
+        ok: false,
+        errorCode: SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
+        errorMessage: configuration.message,
+        cleanupOnFailure,
+        cleanupOnExit,
+        ...(materializationDiagnostics ? { materializationDiagnostics } : {}),
+      };
+    }
   }
 
   if (params.daemonSpawnHooks?.validateSpawn) {

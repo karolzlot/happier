@@ -36,6 +36,8 @@ import {
 } from '@/cli/connectedServices/resolveDirectConnectedServiceEnvironment';
 import { resolveDirectCliConnectedServiceBindings } from '@/cli/connectedServices/resolveDirectCliConnectedServiceBindings';
 import { HAPPIER_SESSION_CONNECTED_SERVICES_BINDINGS_ENV_KEY } from '@/agent/runtime/sessionConnectedServicesBindingsEnv';
+import { markCodexOpenRouterProfileRequested } from '@/backends/codex/openrouter/openrouterProfile';
+import { inspectCodexOpenRouterMachineConfiguration } from '@/backends/codex/openrouter/codexOpenRouterMachineConfiguration';
 
 type CommonBackendRunOptions = ParsedSessionStartArgs & {
   credentials: Credentials;
@@ -246,8 +248,20 @@ ${chalk.bold.cyan(`${agentId} CLI Options (from \`${providerHelpCommand}\`):`)}
           processEnv: process.env,
           promptSecretFn,
           startedBy,
-        }).then((overlay) => {
+        }).then(async (overlay) => {
           applyProfileToProcessEnv({ profileId: overlay.profileId, envOverlayExpanded: overlay.envOverlayExpanded });
+          if (
+            agentIdForProfiles === 'codex' &&
+            Object.hasOwn(overlay.envOverlayExpanded, 'OPENROUTER_API_KEY')
+          ) {
+            markCodexOpenRouterProfileRequested(process.env);
+            const configuration = await inspectCodexOpenRouterMachineConfiguration({
+              processEnv: process.env,
+            });
+            if (configuration.state !== 'ready') {
+              throw new Error(configuration.message);
+            }
+          }
           return overlay.permissionModeSeed;
         });
       })()

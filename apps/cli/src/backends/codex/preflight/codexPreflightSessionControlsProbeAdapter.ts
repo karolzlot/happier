@@ -6,6 +6,11 @@ import type { Credentials } from '@/persistence';
 import { buildProfileEnvOverlay } from '@/settings/profiles/buildProfileEnvOverlay';
 import { readProfilesFromAccountSettings } from '@/settings/profiles/readProfilesFromAccountSettings';
 import { resolveProfileForAgent } from '@/settings/profiles/resolveProfileForAgent';
+import {
+    inspectCodexOpenRouterMachineConfiguration,
+    refreshCodexOpenRouterCatalogIfStale,
+} from '../openrouter/codexOpenRouterMachineConfiguration';
+import { markCodexOpenRouterProfileRequested } from '../openrouter/openrouterProfile';
 
 async function buildCodexProbeProcessEnv(params: Readonly<{
     timeoutMs: number;
@@ -43,6 +48,16 @@ async function buildCodexProbeProcessEnv(params: Readonly<{
             startedBy: 'daemon',
         });
         Object.assign(processEnv, profileEnv.envOverlayExpanded);
+        if (Object.hasOwn(profileEnv.envOverlayExpanded, 'OPENROUTER_API_KEY')) {
+            markCodexOpenRouterProfileRequested(processEnv);
+            const configuration = await inspectCodexOpenRouterMachineConfiguration({ processEnv });
+            if (configuration.state !== 'ready') {
+                throw new Error(configuration.message);
+            }
+            // Freshness is best effort: a temporary network outage must not
+            // turn a known-good local catalog into a blocked session.
+            await refreshCodexOpenRouterCatalogIfStale({ processEnv }).catch(() => undefined);
+        }
     }
 
     // Ensure slow `model/list` does not silently downgrade the UI to static models (which have no model options).
