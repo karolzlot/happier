@@ -757,6 +757,7 @@ describe('/session/[id]/info', () => {
         expect(completeSessionForkNavigationSpy).toHaveBeenCalledWith({
             childSessionId: 'child-session',
             parentSessionId: 'session-1234567890abcdef',
+            serverId: 'server-b',
             navigate: expect.any(Function),
         });
 
@@ -859,7 +860,7 @@ describe('/session/[id]/info', () => {
         expect(handoffItems).toHaveLength(0);
     });
 
-    it('fails closed and hides the handoff quick action when server-routed transfer is the only transport the selected server advertises', async () => {
+    it('shows the handoff quick action when server-routed transfer is the available transport', async () => {
         sessionHandoffFeatureEnabled = true;
         serverFeaturesSnapshot = {
             status: 'ready',
@@ -903,7 +904,7 @@ describe('/session/[id]/info', () => {
 
         const screen = await renderInfoScreen();
         const handoffItems = screen.findAllByType('Item' as any).filter((node: any) => node.props?.title === 'Hand off session');
-        expect(handoffItems).toHaveLength(0);
+        expect(handoffItems).toHaveLength(1);
     });
 
     it('reacts when machine-rpc direct-peer viability becomes available for the reachable machine target after metadata goes stale', async () => {
@@ -1183,6 +1184,7 @@ describe('/session/[id]/info', () => {
         expect(pushArg).toEqual({
             pathname: '/new',
             params: {
+                draftId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
                 dataId: expect.any(String),
                 machineId: 'machine-display',
                 directory: '/workspace/display',

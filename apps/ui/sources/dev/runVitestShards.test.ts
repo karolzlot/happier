@@ -7,6 +7,8 @@ import {
     resolveVitestConfigPath,
     resolveVitestPositionalFilters,
     resolveVitestShardCount,
+    resolveVitestShardRange,
+    resolveVitestShardTimeoutMs,
     resolveVitestPassthroughArgs,
     runVitestShardRuns,
     shouldVitestShardRunProceedWithoutFiles,
@@ -14,8 +16,8 @@ import {
 } from '../../scripts/runVitestShards.mjs';
 
 describe('apps/ui runVitestShards', () => {
-    it('defaults shard count to 24', () => {
-        expect(resolveVitestShardCount({})).toBe(24);
+    it('defaults shard count to 32 so worker result batches stay below the observed RPC timeout boundary', () => {
+        expect(resolveVitestShardCount({})).toBe(32);
     });
 
     it('uses HAPPIER_UI_VITEST_SHARDS override when valid', () => {
@@ -23,8 +25,45 @@ describe('apps/ui runVitestShards', () => {
     });
 
     it('ignores invalid shard overrides', () => {
-        expect(resolveVitestShardCount({ HAPPIER_UI_VITEST_SHARDS: '0' })).toBe(24);
-        expect(resolveVitestShardCount({ HAPPIER_UI_VITEST_SHARDS: 'nope' })).toBe(24);
+        expect(resolveVitestShardCount({ HAPPIER_UI_VITEST_SHARDS: '0' })).toBe(32);
+        expect(resolveVitestShardCount({ HAPPIER_UI_VITEST_SHARDS: 'nope' })).toBe(32);
+    });
+
+    it('partitions the configured shard count into balanced CI parts', () => {
+        expect(resolveVitestShardRange({ HAPPIER_UI_VITEST_PART: '1', HAPPIER_UI_VITEST_PARTS: '4' }, 32)).toEqual({
+            start: 1,
+            end: 8,
+            part: 1,
+            parts: 4,
+        });
+        expect(resolveVitestShardRange({ HAPPIER_UI_VITEST_PART: '4', HAPPIER_UI_VITEST_PARTS: '4' }, 32)).toEqual({
+            start: 25,
+            end: 32,
+            part: 4,
+            parts: 4,
+        });
+    });
+
+    it('runs the full shard range when partition inputs are absent or invalid', () => {
+        expect(resolveVitestShardRange({}, 24)).toEqual({ start: 1, end: 24, part: 1, parts: 1 });
+        expect(resolveVitestShardRange({ HAPPIER_UI_VITEST_PART: '5', HAPPIER_UI_VITEST_PARTS: '4' }, 24)).toEqual({
+            start: 1,
+            end: 24,
+            part: 1,
+            parts: 1,
+        });
+    });
+
+    it('bounds each shard independently so one wedged process cannot hide later shards', () => {
+        expect(resolveVitestShardTimeoutMs({})).toBe(900_000);
+        expect(resolveVitestShardTimeoutMs({ HAPPIER_UI_VITEST_SHARD_TIMEOUT_MS: '120000' })).toBe(120_000);
+        expect(resolveVitestShardTimeoutMs({ HAPPIER_UI_VITEST_SHARD_TIMEOUT_MS: '0' })).toBe(900_000);
+        expect(classifyVitestShardTermination({ code: null, signal: 'SIGTERM', timedOut: true })).toEqual({
+            outcome: 'failed',
+            exitCode: 124,
+            signal: 'SIGTERM',
+            timedOut: true,
+        });
     });
 
     it('parses --config path from argv', () => {
@@ -154,6 +193,36 @@ describe('apps/ui runVitestShards', () => {
 
         expect(runShard.mock.calls.map(([entry]) => entry.shard)).toEqual([1, 2, 3]);
         expect(outcomes.map((entry) => entry.outcome)).toEqual(['failed', 'passed', 'passed']);
+    });
+
+    it('runs later shards after an early shard times out', async () => {
+        const runShard = vi.fn()
+            .mockResolvedValueOnce({ ok: true, code: null, signal: 'SIGTERM', timedOut: true })
+            .mockResolvedValueOnce({ ok: true, code: 0, signal: null });
+
+        const outcomes = await runVitestShardRuns({
+            shardFiles: [['/abs/a.test.ts'], ['/abs/b.test.ts']],
+            runShard,
+        });
+
+        expect(runShard).toHaveBeenCalledTimes(2);
+        expect(outcomes.map((entry) => entry.outcome)).toEqual(['failed', 'passed']);
+        expect(summarizeVitestShardOutcomes({ shardCount: 2, outcomes }).lines.join('\n')).toContain('shard 1/2 FAILED (timed out)');
+    });
+
+    it('runs only the assigned absolute shard range', async () => {
+        const runShard = vi.fn().mockResolvedValue({ ok: true, code: 0, signal: null });
+        const shardFiles = Array.from({ length: 8 }, (_value, index) => [`/abs/${index + 1}.test.ts`]);
+
+        const outcomes = await runVitestShardRuns({
+            shardFiles,
+            startShard: 5,
+            endShard: 8,
+            runShard,
+        });
+
+        expect(runShard.mock.calls.map(([entry]) => entry.shard)).toEqual([5, 6, 7, 8]);
+        expect(outcomes.map((entry) => entry.shard)).toEqual([5, 6, 7, 8]);
     });
 
     it('exits non-zero and names every failing shard when a later shard fails', () => {

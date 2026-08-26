@@ -20,7 +20,8 @@ vi.mock('@/integrations/watcher/awaitFileExist', () => ({
   }),
 }));
 
-vi.mock('./utils/claudeCheckSession', () => ({
+vi.mock('./utils/claudeCheckSession', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./utils/claudeCheckSession')>()),
   claudeCheckSession: vi.fn(() => false),
 }));
 
@@ -144,6 +145,16 @@ describe('claudeRemote', () => {
     const call = mockQuery.mock.calls[0]?.[0] as QueryCall | undefined;
     expect(call?.options?.executable).toBe('/managed/js-runtime');
     expect(call?.options?.includeHookEvents).toBe(true);
+  });
+
+  it('binds the managed Happier session id into the legacy remote child environment', async () => {
+    mockQuery.mockReturnValue(messageStream(resultMessage()));
+
+    const { claudeRemote } = await import('./claudeRemote');
+    await claudeRemote(createBaseOptions({ happySessionId: 'managed-session-1' }));
+
+    const call = mockQuery.mock.calls[0]?.[0] as QueryCall | undefined;
+    expect(call?.options?.env).toMatchObject({ HAPPIER_SESSION_ID: 'managed-session-1' });
   });
 
   it('arms workflow startup reconciliation after the legacy query observer installs', async () => {

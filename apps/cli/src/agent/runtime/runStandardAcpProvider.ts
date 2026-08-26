@@ -55,6 +55,7 @@ import {
   createLocalAgentNativeResumeRecordStore,
   prepareAgentNativeReturnStrictResume,
 } from '@/session/agentTransition/agentNativeReturn';
+import { withCurrentHappierSessionId } from '@/agent/runtime/session/currentSessionIdEnv';
 
 type RuntimeForLoop = {
   beginTurn: () => void;
@@ -140,6 +141,8 @@ export type StandardAcpProviderConfig = {
     getAbortSignal: () => AbortSignal;
     setThinking: (value: boolean) => void;
     memoryRecallGuidanceEnabled: boolean;
+    processEnv?: NodeJS.ProcessEnv;
+    toolDelivery: 'native_mcp' | 'shell_bridge' | 'unsupported';
     pendingQueueDrainMaxPopPerWake?: number;
     providerInputConsumer: SessionProviderInputConsumer<unknown, unknown>;
     turnAssistantPreviewTracker: TurnAssistantPreviewTracker;
@@ -159,6 +162,17 @@ export type StandardAcpProviderConfig = {
   onDispose?: (params: { session: ApiSessionClient; runtime: RuntimeForLoop }) => void | Promise<void>;
   startRuntimeBeforeFirstPrompt?: boolean;
   failClosedOnResumeFailure?: boolean;
+  /**
+   * True when the backend applies the effective coding system prompt at process
+   * spawn without waiting for the first message — e.g. pi, where the spawn flag
+   * (`--append-system-prompt`) carries residual user content and the tools-bridge
+   * extension appends the Happier base blocks (session title, response options,
+   * attachments, linked workspace, memory recall) from its launch flags before the
+   * first LLM call. The fresh-session first-message prepend then carries only an
+   * explicit per-message base override, which cannot ride either path, instead of
+   * duplicating the spawn-delivered system prompt.
+   */
+  deliversSystemPromptAtSpawn?: boolean;
   onTerminalDisplayControllerReady?: (controller: TerminalDisplayController) => void;
   shouldRenderTerminalDisplay?: (params: { opts: StandardAcpProviderRunOptions; session: ApiSessionClient; metadata: Metadata }) => boolean;
   resolveKeepAliveMode?: () => KeepAliveMode;
@@ -495,6 +509,8 @@ export async function runStandardAcpProvider(
     getAbortSignal: () => abortController.signal,
     setThinking: setThinkingState,
     memoryRecallGuidanceEnabled,
+    processEnv: withCurrentHappierSessionId(process.env, session.sessionId),
+    toolDelivery,
     pendingQueueDrainMaxPopPerWake,
     providerInputConsumer: providerInputConsumer as SessionProviderInputConsumer<unknown, unknown>,
     turnAssistantPreviewTracker,
@@ -636,10 +652,10 @@ export async function runStandardAcpProvider(
       sessionId: session.sessionId,
       targetAgentId: policyAgentId,
       vendorResumeId: initialResumeId,
-       updateMetadata: async (updater) => await session.updateMetadata((metadata) =>
-         updater(metadata as Record<string, unknown>) as typeof metadata,
-       ),
-      })
+      updateMetadata: async (updater) => await session.updateMetadata((metadata) =>
+        updater(metadata as Record<string, unknown>) as typeof metadata,
+      ),
+    })
     : null;
   const toolDeliverySessionId = toolDelivery === 'shell_bridge'
     ? session.sessionId
@@ -687,24 +703,35 @@ export async function runStandardAcpProvider(
         : undefined,
       failClosedOnResumeFailure: config.failClosedOnResumeFailure === true,
       startRuntimeBeforeFirstPrompt: config.startRuntimeBeforeFirstPrompt === true,
-      resolveFreshSessionSystemPrompt: async ({ baseOverride }) =>
-        await resolveEffectiveCodingPromptText({
-          credentials: opts.credentials,
-          settings: opts.accountSettingsContext?.settings ?? null,
-          profileId: session.getMetadataSnapshot()?.profileId ?? null,
-          baseOverride,
-          executionRunsFeatureEnabled: resolveCliFeatureDecision({
-            featureId: 'execution.runs',
-            env: process.env,
-          }).state === 'enabled',
-          providerId: policyAgentId,
-          toolDelivery,
-          toolDeliverySessionId,
-          toolDeliveryDirectory: runtimeDirectory,
-          memoryMachineId: machineId,
-          memoryRecallGuidanceEnabled,
-          cache: promptArtifactBodyCache,
-        }),
+      resolveFreshSessionSystemPrompt: async ({ baseOverride }) => {
+        if (config.deliversSystemPromptAtSpawn !== true) {
+          return await resolveEffectiveCodingPromptText({
+            credentials: opts.credentials,
+            settings: opts.accountSettingsContext?.settings ?? null,
+            profileId: session.getMetadataSnapshot()?.profileId ?? null,
+            baseOverride,
+            executionRunsFeatureEnabled: resolveCliFeatureDecision({
+              featureId: 'execution.runs',
+              env: process.env,
+            }).state === 'enabled',
+            providerId: policyAgentId,
+            toolDelivery,
+            toolDeliverySessionId,
+            toolDeliveryDirectory: runtimeDirectory,
+            memoryMachineId: machineId,
+            memoryRecallGuidanceEnabled,
+            cache: promptArtifactBodyCache,
+          });
+        }
+        // The backend delivers the effective coding system prompt at process
+        // spawn. Pi uses one canonically ordered protected bridge config when its
+        // native extension binds, or --append-system-prompt for the fallback. The
+        // first-message prepend must not duplicate either path; only an explicit
+        // per-message base override, unavailable at spawn, still rides here.
+        return typeof baseOverride === 'string' && baseOverride.trim()
+          ? baseOverride.trim()
+          : '';
+      },
       onAfterStart: config.onAfterStart ? () => config.onAfterStart?.({ session, runtime }) : undefined,
       onAfterReset: config.onAfterReset ? () => config.onAfterReset?.({ session, runtime }) : undefined,
       formatPromptErrorMessage: config.formatPromptErrorMessage,

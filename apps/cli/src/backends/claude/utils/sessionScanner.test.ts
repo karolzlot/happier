@@ -684,6 +684,42 @@ describe('sessionScanner', () => {
     expect(uuids).not.toContain('old-row-after-replacement')
   })
 
+  it('keeps a live row replayable when its message callback fails before custody', async () => {
+    const altProjectDir = join(testDir, 'alt-project-live-callback-retry')
+    await mkdir(altProjectDir, { recursive: true })
+
+    const sessionId = '22222222-2222-2222-2222-222222222224'
+    const transcriptPath = join(altProjectDir, `${sessionId}.jsonl`)
+    await writeFile(transcriptPath, '')
+
+    let attempts = 0
+    scanner = await createSessionScanner({
+      sessionId,
+      transcriptPath,
+      workingDirectory: testDir,
+      onMessage: async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('transcript custody unavailable')
+      },
+    })
+
+    const row = JSON.stringify({
+      type: 'assistant',
+      uuid: 'live-row-requires-retry',
+      timestamp: new Date(Date.now() + 60_000).toISOString(),
+      message: { role: 'assistant', content: [{ type: 'text', text: 'retry me after reset' }] },
+    }) + '\n'
+    await appendFile(transcriptPath, row)
+    await waitFor(() => attempts === 1, 2000)
+
+    const replacementPath = `${transcriptPath}.replacement`
+    await writeFile(replacementPath, row)
+    await rename(replacementPath, transcriptPath)
+
+    await waitFor(() => attempts === 2, 4000)
+    expect(attempts).toBe(2)
+  })
+
   it('does not observe replay-suppressed snapshot rows on the raw side-effect channel', async () => {
     const sessionId = '22222222-2222-2222-2222-222222222226'
     const sessionFile = join(projectDir, `${sessionId}.jsonl`)
@@ -1319,6 +1355,64 @@ describe('sessionScanner', () => {
       }),
     )
   }, 10_000)
+
+  it('emits an unhooked diagnostic transcript once without binding or following it', async () => {
+    const diagnosticSessionId = '33333333-3333-4333-8333-333333333333'
+    const diagnosticFile = join(projectDir, `${diagnosticSessionId}.jsonl`)
+    const classifications: string[] = []
+
+    scanner = await createSessionScanner({
+      sessionId: null,
+      workingDirectory: testDir,
+      onMessage: (message) => collectedMessages.push(message),
+      discoverNewSessions: true,
+      bindToFirstSession: true,
+      bindDiscoveredSessions: false,
+      replayInitialMessages: true,
+      classifyDiscoveredSession: ({ sessionId }) => {
+        classifications.push(sessionId)
+        return 'diagnostic'
+      },
+    })
+
+    await writeFile(diagnosticFile,
+      `${JSON.stringify({
+        type: 'user',
+        uuid: 'foreign-user-before-diagnostic',
+        timestamp: new Date().toISOString(),
+        sessionId: diagnosticSessionId,
+        message: { role: 'user', content: 'private prompt from another Claude session' },
+      } as RawJSONLines)}\n${JSON.stringify({
+        type: 'assistant',
+        uuid: 'diagnostic-initial',
+        timestamp: new Date().toISOString(),
+        sessionId: diagnosticSessionId,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'rate limited' }] },
+        isApiErrorMessage: true,
+      } as RawJSONLines)}\n${JSON.stringify({
+        type: 'assistant',
+        uuid: 'foreign-assistant-after-diagnostic',
+        timestamp: new Date().toISOString(),
+        sessionId: diagnosticSessionId,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'private answer from another Claude session' }] },
+      } as RawJSONLines)}\n`,
+    )
+
+    await waitFor(() => classifications.length === 1)
+    await appendFile(diagnosticFile,
+      `${JSON.stringify({
+        type: 'assistant',
+        uuid: 'diagnostic-later',
+        timestamp: new Date().toISOString(),
+        sessionId: diagnosticSessionId,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'foreign continuation' }] },
+      } as RawJSONLines)}\n`,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    expect(classifications).toEqual([diagnosticSessionId])
+    expect(collectedMessages.map((message) => message.uuid)).toEqual(['diagnostic-initial'])
+  })
 
   it('drops rows whose sessionId differs from the bound session (hard per-row filter)', async () => {
     const boundSessionId = '44444444-4444-4444-4444-444444444444'

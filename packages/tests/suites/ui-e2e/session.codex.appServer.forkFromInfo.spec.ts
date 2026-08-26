@@ -5,10 +5,8 @@ import { join, resolve } from 'node:path';
 
 import { createRunDirs } from '../../src/testkit/runDir';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
-import { startUiWeb, type StartedUiWeb } from '../../src/testkit/process/uiWeb';
-import { startTestDaemon, type StartedDaemon } from '../../src/testkit/daemon/daemon';
-import { startCliAuthLoginForTerminalConnect, type StartedCliTerminalConnect } from '../../src/testkit/uiE2e/cliTerminalConnect';
-import { approveTerminalConnect } from '../../src/testkit/uiE2e/approveTerminalConnect';
+import { resolveUiWebBeforeAllTimeoutMs, startUiWeb, type StartedUiWeb } from '../../src/testkit/process/uiWeb';
+import { type StartedDaemon } from '../../src/testkit/daemon/daemon';
 import { openNewSessionMachineSelection } from '../../src/testkit/uiE2e/createSessionFromNewSessionComposer';
 import {
     gotoCommittedWithRetries,
@@ -18,6 +16,8 @@ import {
 } from '../../src/testkit/uiE2e/pageNavigation';
 import { ensureAccountReadyForConnect } from '../../src/testkit/uiE2e/ensureAccountReadyForConnect';
 import { selectNewSessionAgent } from '../../src/testkit/uiE2e/selectNewSessionAgent';
+import { selectSessionForkStrategy } from '../../src/testkit/uiE2e/selectSessionForkStrategy';
+import { authenticateAndStartDaemon } from '../../src/testkit/uiE2e/authenticateAndStartDaemon';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 
@@ -127,6 +127,10 @@ async function writeFakeCodexAppServerScript(params: { scriptPath: string }): Pr
         '    process.stdout.write(JSON.stringify({ id: msg.id, result: { threadId: "thread-forked", model: "gpt-5.4", serviceTier: null } }) + "\\n");',
         '    continue;',
         '  }',
+        '  if (msg.method === "thread/resume") {',
+        '    process.stdout.write(JSON.stringify({ id: msg.id, result: { threadId: msg.params?.threadId ?? "thread-forked", model: msg.params?.model ?? "gpt-5.4", serviceTier: Object.prototype.hasOwnProperty.call(msg.params ?? {}, "serviceTier") ? msg.params.serviceTier : null } }) + "\\n");',
+        '    continue;',
+        '  }',
         '  if (msg.method === "collaborationMode/list") {',
         '    process.stdout.write(JSON.stringify({ id: msg.id, result: [{ name: "Default", mode: "default", reasoning_effort: null }] }) + "\\n");',
         '    continue;',
@@ -219,7 +223,7 @@ test.describe('ui e2e: Codex app-server fork from session info', () => {
     let daemon: StartedDaemon | null = null;
 
     test.beforeAll(async () => {
-        test.setTimeout(420_000);
+        test.setTimeout(resolveUiWebBeforeAllTimeoutMs(process.env));
         await mkdir(cliHomeDir, { recursive: true });
         await writeFile(resolve(join(cliHomeDir, 'AGENTS.md')), '# UI e2e fixture\n', 'utf8');
 
@@ -271,37 +275,15 @@ test.describe('ui e2e: Codex app-server fork from session info', () => {
         const fakeCodexAppServerPath = resolve(join(testDir, 'fake-codex-app-server.mjs'));
         await writeFakeCodexAppServerScript({ scriptPath: fakeCodexAppServerPath });
 
-        const cliLogin: StartedCliTerminalConnect = await startCliAuthLoginForTerminalConnect({
+        daemon = await authenticateAndStartDaemon({
+            page,
             testDir,
             cliHomeDir,
             serverUrl: server.baseUrl,
-            webappUrl: uiBaseUrl,
-            env: {
+            uiBaseUrl,
+            extraEnv: {
                 ...process.env,
                 HOME: cliHomeDir,
-                CI: '1',
-                HAPPIER_DISABLE_CAFFEINATE: '1',
-                HAPPIER_VARIANT: 'dev',
-            },
-        });
-
-        await gotoDomContentLoadedWithPathFallback(page, cliLogin.connectUrl, '/terminal/connect', 180_000);
-        await approveTerminalConnect({ page });
-        await cliLogin.waitForSuccess();
-        await cliLogin.stop().catch(() => {});
-
-        daemon = await startTestDaemon({
-            testDir,
-            happyHomeDir: cliHomeDir,
-            env: {
-                ...process.env,
-                HOME: cliHomeDir,
-                CI: '1',
-                HAPPIER_HOME_DIR: cliHomeDir,
-                HAPPIER_SERVER_URL: server.baseUrl,
-                HAPPIER_WEBAPP_URL: uiBaseUrl,
-                HAPPIER_DISABLE_CAFFEINATE: '1',
-                HAPPIER_VARIANT: 'dev',
                 HAPPIER_CODEX_APP_SERVER_BIN: fakeCodexAppServerPath,
                 HAPPIER_CODEX_APP_SERVER_RPC_TIMEOUT_MS: '10000',
             },
@@ -321,12 +303,13 @@ test.describe('ui e2e: Codex app-server fork from session info', () => {
         await expect(page.getByTestId('transcript-chat-list')).toHaveCount(1, { timeout: 120_000 });
         await expect(page.getByText('FAKE_CODEX_INFO_FORK_OK_1')).toHaveCount(1, { timeout: 180_000 });
 
-        await page.getByTestId('session-header-avatar').click();
+        await page.getByRole('button', { name: 'Session Info' }).click();
         await page.waitForURL((url) => url.pathname.endsWith(`/session/${parentSessionId}/info`), { timeout: 60_000 });
         await expect(page.getByTestId('session-info-screen')).toHaveCount(1, { timeout: 60_000 });
         await expect(page.getByTestId('session-info-fork-session')).toHaveCount(1, { timeout: 60_000 });
 
         await page.getByTestId('session-info-fork-session').click();
+        await selectSessionForkStrategy(page, 'native');
 
         const childSessionId = await waitForForkedChildSessionId({
             suiteDir,

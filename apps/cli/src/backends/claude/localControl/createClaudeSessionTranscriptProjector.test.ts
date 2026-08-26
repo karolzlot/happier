@@ -103,6 +103,7 @@ function createSessionFixture(): Readonly<{
       sessionId: 'happy-session-id',
       getMetadataSnapshot: () => metadata,
       sendClaudeSessionMessage: vi.fn(),
+      sendClaudeSessionMessageCommittedExact: vi.fn(async () => {}),
       sendClaudeSessionMessageCommitted: vi.fn(async () => ({
         persisted: true,
         delivered: true,
@@ -146,7 +147,7 @@ function buildAssistantRow(params: Readonly<{
 }
 
 describe('createClaudeSessionTranscriptProjector compaction events', () => {
-  it('derives replayed compact_boundary lifecycle identity from the raw boundary evidence', () => {
+  it('derives replayed compact_boundary lifecycle identity from the raw boundary evidence', async () => {
     const firstBoundary = {
       type: 'system',
       subtype: 'compact_boundary',
@@ -167,15 +168,15 @@ describe('createClaudeSessionTranscriptProjector compaction events', () => {
       session: firstFixture.session,
       logPrefix: '[test]',
     });
-    firstProjector.observe(firstBoundary);
-    firstProjector.observe(replayedBoundary);
+    await firstProjector.observe(firstBoundary);
+    await firstProjector.observe(replayedBoundary);
 
     const replayFixture = createSessionFixture();
     const replayProjector = createClaudeSessionTranscriptProjector({
       session: replayFixture.session,
       logPrefix: '[test]',
     });
-    replayProjector.observe(replayedBoundary);
+    await replayProjector.observe(replayedBoundary);
 
     const firstEvents = (firstFixture.session.client.sendSessionEvent as unknown as ReturnType<typeof vi.fn>)
       .mock.calls.map((call) => call[0]);
@@ -198,6 +199,66 @@ describe('createClaudeSessionTranscriptProjector compaction events', () => {
 });
 
 describe('createClaudeSessionTranscriptProjector model adoption', () => {
+  it('does not finish a live observation before exact transcript custody is acknowledged', async () => {
+    const fixture = createSessionFixture();
+    let acknowledge!: () => void;
+    const acknowledgement = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    vi.mocked(fixture.session.client.sendClaudeSessionMessageCommittedExact!).mockReturnValueOnce(acknowledgement);
+    const projector = createClaudeSessionTranscriptProjector({
+      session: fixture.session,
+      logPrefix: '[test]',
+    });
+
+    let settled = false;
+    const observation = Promise.resolve(projector.observe(buildAssistantRow({
+      uuid: 'live-assistant-awaiting-custody',
+      model: 'claude-fable-5',
+    }))).then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    expect(fixture.session.client.sendClaudeSessionMessageCommittedExact).toHaveBeenCalledTimes(1);
+    expect(fixture.session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+
+    acknowledge();
+    await observation;
+    expect(settled).toBe(true);
+  });
+
+  it('serializes live transcript observations across exact custody acknowledgements', async () => {
+    const fixture = createSessionFixture();
+    let acknowledgeFirst!: () => void;
+    const firstAcknowledgement = new Promise<void>((resolve) => {
+      acknowledgeFirst = resolve;
+    });
+    vi.mocked(fixture.session.client.sendClaudeSessionMessageCommittedExact!)
+      .mockReturnValueOnce(firstAcknowledgement);
+    const projector = createClaudeSessionTranscriptProjector({
+      session: fixture.session,
+      logPrefix: '[test]',
+    });
+
+    const first = projector.observe(buildAssistantRow({
+      uuid: 'live-assistant-first',
+      model: 'claude-fable-5',
+    }));
+    const second = projector.observe(buildAssistantRow({
+      uuid: 'live-assistant-second',
+      model: 'claude-sonnet-5',
+    }));
+
+    await Promise.resolve();
+    expect(fixture.session.client.sendClaudeSessionMessageCommittedExact).toHaveBeenCalledTimes(1);
+
+    acknowledgeFirst();
+    await Promise.all([first, second]);
+    expect(fixture.session.client.sendClaudeSessionMessageCommittedExact).toHaveBeenCalledTimes(2);
+  });
+
   it('durably projects historical rows without adopting stale live runtime state', async () => {
     const fixture = createSessionFixture();
     const projector = createClaudeSessionTranscriptProjector({
@@ -275,14 +336,14 @@ describe('createClaudeSessionTranscriptProjector model adoption', () => {
     }))).resolves.toBeUndefined();
   });
 
-  it('adopts the effective model from non-sidechain assistant transcript rows into session models metadata', () => {
+  it('adopts the effective model from non-sidechain assistant transcript rows into session models metadata', async () => {
     const fixture = createSessionFixture();
     const projector = createClaudeSessionTranscriptProjector({
       session: fixture.session,
       logPrefix: '[test]',
     });
 
-    projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
 
     expect(fixture.getMetadata().sessionModelsV1).toMatchObject({
       provider: 'claude',
@@ -294,28 +355,28 @@ describe('createClaudeSessionTranscriptProjector model adoption', () => {
     });
   });
 
-  it('does not rewrite metadata for repeated rows with the same model', () => {
+  it('does not rewrite metadata for repeated rows with the same model', async () => {
     const fixture = createSessionFixture();
     const projector = createClaudeSessionTranscriptProjector({
       session: fixture.session,
       logPrefix: '[test]',
     });
 
-    projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
-    projector.observe(buildAssistantRow({ uuid: 'a-2', model: 'claude-fable-5' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-2', model: 'claude-fable-5' }));
 
     expect(fixture.getUpdateMetadataCallCount()).toBe(1);
   });
 
-  it('adopts a model change mid-session', () => {
+  it('adopts a model change mid-session', async () => {
     const fixture = createSessionFixture();
     const projector = createClaudeSessionTranscriptProjector({
       session: fixture.session,
       logPrefix: '[test]',
     });
 
-    projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
-    projector.observe(buildAssistantRow({ uuid: 'a-2', model: 'claude-sonnet-4-6' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-2', model: 'claude-sonnet-4-6' }));
 
     expect(fixture.getMetadata().sessionModelsV1).toMatchObject({
       provider: 'claude',
@@ -323,16 +384,16 @@ describe('createClaudeSessionTranscriptProjector model adoption', () => {
     });
   });
 
-  it('emits one visible session event for a transcript assistant model delta', () => {
+  it('emits one visible session event for a transcript assistant model delta', async () => {
     const fixture = createSessionFixture();
     const projector = createClaudeSessionTranscriptProjector({
       session: fixture.session,
       logPrefix: '[test]',
     });
 
-    projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
-    projector.observe(buildAssistantRow({ uuid: 'a-2', model: 'claude-opus-4-8' }));
-    projector.observe(buildAssistantRow({ uuid: 'a-3', model: 'claude-opus-4-8' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-2', model: 'claude-opus-4-8' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-3', model: 'claude-opus-4-8' }));
 
     expect(fixture.getMetadata().sessionModelsV1).toMatchObject({
       provider: 'claude',
@@ -346,7 +407,7 @@ describe('createClaudeSessionTranscriptProjector model adoption', () => {
     ]);
   });
 
-  it('dedupes a model transition reported by both statusline and transcript evidence', () => {
+  it('dedupes a model transition reported by both statusline and transcript evidence', async () => {
     const fixture = createSessionFixture();
     const projector = createClaudeSessionTranscriptProjector({
       session: fixture.session,
@@ -354,13 +415,13 @@ describe('createClaudeSessionTranscriptProjector model adoption', () => {
     });
     const applier = createClaudeStatuslineApplier({ logPrefix: '[test]' });
 
-    projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
     applier.apply(fixture.session, {
       session_id: 'claude-session-id',
       transcript_path: '/tmp/transcript.jsonl',
       model: { id: 'claude-opus-4-8', display_name: 'Opus 4.8' },
     });
-    projector.observe(buildAssistantRow({ uuid: 'a-2', model: 'claude-opus-4-8' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-2', model: 'claude-opus-4-8' }));
 
     expect(fixture.getSessionEventCalls()).toEqual([
       {
@@ -374,29 +435,29 @@ describe('createClaudeSessionTranscriptProjector model adoption', () => {
     });
   });
 
-  it('ignores sidechain assistant rows (subagents may run a different model)', () => {
+  it('ignores sidechain assistant rows (subagents may run a different model)', async () => {
     const fixture = createSessionFixture();
     const projector = createClaudeSessionTranscriptProjector({
       session: fixture.session,
       logPrefix: '[test]',
     });
 
-    projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-haiku-4-5', isSidechain: true }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-haiku-4-5', isSidechain: true }));
 
     expect(fixture.getMetadata().sessionModelsV1).toBeUndefined();
     expect(fixture.getUpdateMetadataCallCount()).toBe(0);
   });
 
-  it('ignores synthetic and empty model values', () => {
+  it('ignores synthetic and empty model values', async () => {
     const fixture = createSessionFixture();
     const projector = createClaudeSessionTranscriptProjector({
       session: fixture.session,
       logPrefix: '[test]',
     });
 
-    projector.observe(buildAssistantRow({ uuid: 'a-1', model: '<synthetic>' }));
-    projector.observe(buildAssistantRow({ uuid: 'a-2', model: '  ' }));
-    projector.observe(buildAssistantRow({ uuid: 'a-3' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-1', model: '<synthetic>' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-2', model: '  ' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-3' }));
 
     expect(fixture.getMetadata().sessionModelsV1).toBeUndefined();
     expect(fixture.getUpdateMetadataCallCount()).toBe(0);
@@ -599,7 +660,7 @@ describe('createClaudeSessionTranscriptProjector workflow activity wiring (CWF3/
     expect(workflow.observedRaw()).toEqual([goalRow]);
   });
 
-  it('does NOT feed the workflow source from the post-strip observe channel', () => {
+  it('does NOT feed the workflow source from the post-strip observe channel', async () => {
     const fixture = createSessionFixture();
     const workflow = createWorkflowActivitySourceFake();
     const projector = createClaudeSessionTranscriptProjector({
@@ -608,12 +669,12 @@ describe('createClaudeSessionTranscriptProjector workflow activity wiring (CWF3/
       workflowActivitySource: workflow.source,
     });
 
-    projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
+    await projector.observe(buildAssistantRow({ uuid: 'a-1', model: 'claude-fable-5' }));
 
     expect(workflow.observedRaw()).toEqual([]);
   });
 
-  it('drops workflow-owned work-state rows at the publish chokepoint (CWF4 filter)', () => {
+  it('drops workflow-owned work-state rows at the publish chokepoint (CWF4 filter)', async () => {
     const fixture = createSessionFixture();
     // The workflow source owns the TaskCreate tool_use ref, so the projected task item must be
     // filtered out of the published work-state.
@@ -624,13 +685,13 @@ describe('createClaudeSessionTranscriptProjector workflow activity wiring (CWF3/
       workflowActivitySource: workflow.source,
     });
 
-    projector.observe(buildTaskCreateRow({ uuid: 't-1', toolUseId: 'toolu_wf_agent', title: 'Implement parser' }));
+    await projector.observe(buildTaskCreateRow({ uuid: 't-1', toolUseId: 'toolu_wf_agent', title: 'Implement parser' }));
 
     const items = readWorkStateItems(fixture.getMetadata());
     expect(items.some((item) => item.vendorRef === 'tool_use:toolu_wf_agent')).toBe(false);
   });
 
-  it('keeps non-workflow-owned work-state rows (filter is targeted, not blanket)', () => {
+  it('keeps non-workflow-owned work-state rows (filter is targeted, not blanket)', async () => {
     const fixture = createSessionFixture();
     // The owned set does not include this task's ref, so the item survives.
     const workflow = createWorkflowActivitySourceFake(['tool_use:toolu_other']);
@@ -640,7 +701,7 @@ describe('createClaudeSessionTranscriptProjector workflow activity wiring (CWF3/
       workflowActivitySource: workflow.source,
     });
 
-    projector.observe(buildTaskCreateRow({ uuid: 't-1', toolUseId: 'toolu_wf_agent', title: 'Implement parser' }));
+    await projector.observe(buildTaskCreateRow({ uuid: 't-1', toolUseId: 'toolu_wf_agent', title: 'Implement parser' }));
 
     const items = readWorkStateItems(fixture.getMetadata());
     expect(items.some((item) => item.vendorRef === 'tool_use:toolu_wf_agent')).toBe(true);
@@ -716,7 +777,7 @@ describe('createClaudeSessionTranscriptProjector workflow activity wiring (CWF3/
     });
 
     // No source wired: TodoWrite/task projection and flush/reset must not throw.
-    projector.observe(buildTaskCreateRow({ uuid: 't-1', toolUseId: 'toolu_wf_agent', title: 'Implement parser' }));
+    await projector.observe(buildTaskCreateRow({ uuid: 't-1', toolUseId: 'toolu_wf_agent', title: 'Implement parser' }));
     await projector.flushWorkflowActivity();
     projector.reset();
 

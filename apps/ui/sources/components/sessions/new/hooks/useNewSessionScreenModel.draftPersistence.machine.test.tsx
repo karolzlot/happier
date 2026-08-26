@@ -19,8 +19,8 @@ describe('useNewSessionScreenModel (draft hydration — machine)', () => {
         standardCleanup();
     });
 
-    beforeEach(() => {
-        resetDraftPersistenceState();
+    beforeEach(async () => {
+        await resetDraftPersistenceState();
     });
 
     it('clears stale workspace linkage after the selected machine changes to a different machine route', async () => {
@@ -40,11 +40,9 @@ describe('useNewSessionScreenModel (draft hydration — machine)', () => {
         expect(model?.simpleProps?.selectedWorkspaceId).toBeUndefined();
         expect(model?.simpleProps?.selectedWorkspaceLocationId).toBeUndefined();
         expect(model?.simpleProps?.selectedWorkspaceCheckoutId).toBeUndefined();
-        expect(model?.simpleProps?.checkoutCreationDraft).toBeNull();
         expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
             authoringDraft: expect.objectContaining({
                 directory: '/home/one',
-                checkoutCreationDraft: null,
             }),
         }));
     });

@@ -5736,6 +5736,12 @@ export const de: TranslationStructure = {
         newTagConfirm: 'Hinzufügen',
     },
 
+    sessionDrafts: {
+        sectionTitle: 'Entwürfe', badge: 'Entwurf', untitled: 'Unbenannter Entwurf', continueEditing: 'Weiterbearbeiten', startAnother: 'Neuen Entwurf beginnen',
+        status: { offline: 'Nicht verbunden', syncing: 'Wird synchronisiert', conflict: 'Konflikt', machineUnavailable: 'Computer nicht verfügbar', attachmentNeedsAttention: 'Anhang prüfen', startInterrupted: 'Start unterbrochen' },
+        new: { action: 'Neuer Entwurf' }, delete: { action: 'Entwurf löschen', confirmTitle: 'Entwurf löschen?', confirmDescription: 'Dieser Entwurf wird von deinen Geräten entfernt.' },
+        conflict: { title: 'Entwurfskonflikt', description: 'Dieses Feld wurde auf einem anderen Gerät geändert.', mine: 'Auf diesem Gerät', synced: 'Synchronisiert', useSynced: 'Synchronisierte Version verwenden', keepDevice: 'Geräteversion behalten', copyMine: 'Meine Version kopieren', copied: 'Kopiert', copyFailed: 'Kopieren fehlgeschlagen', field: { text: 'Textinhalt', mentions: 'Erwähnungen', attachments: 'Anhänge', recipient: 'Empfänger', agentContinuation: 'Agentenfortsetzung', executionRunDelivery: 'Laufzustellung' } },
+    },
     sessionsList: {
         serverHeader: ({ server }: { server: string }) => `Server: ${server}`,
         storagePersistedTab: 'Happier',
@@ -7330,6 +7336,14 @@ export const de: TranslationStructure = {
     },
 
 settingsSession: {
+    newSessionDraftEntry: {
+        title: 'Entwürfe für neue Sitzungen',
+        footer: 'Wähle, ob „Neue Sitzung“ den Entwurf dieses Geräts fortsetzt oder einen neuen öffnet.',
+        resumeTitle: 'Vorherigen Entwurf fortsetzen',
+        resumeSubtitle: 'Setze den auf diesem Gerät über „Neue Sitzung“ begonnenen Entwurf fort.',
+        freshTitle: 'Immer neu beginnen',
+        freshSubtitle: 'Öffne bei jeder Auswahl von „Neue Sitzung“ einen neuen Entwurf.',
+    },
 	          sessionList: {
 	              title: 'Session-Liste',
 	              footer: 'Aussehen und Verhalten der Session-Liste in der Seitenleiste.',
@@ -7912,6 +7926,9 @@ settingsSession: {
               wizardColumnsTitle: 'Zweispaltiges Layout',
               wizardColumnsEnabledSubtitle: 'Zusammengehörige Auswahlen auf breiten Bildschirmen nebeneinander setzen.',
               wizardColumnsDisabledSubtitle: 'Jede Auswahl des Assistenten in einer Spalte stapeln.',
+              defaultWorktreeTitle: 'Worktree für neue Sessions erstellen',
+              defaultWorktreeEnabledSubtitle: 'Jede neue Git-Session in einem neuen Worktree starten.',
+              defaultWorktreeDisabledSubtitle: 'Neue Git-Sessions im ausgewählten Ordner starten.',
               wizardPresentationTitle: 'Layout der Auswahlen im Assistenten',
               wizardPresentationFooter: '„Automatisch“ lässt kurze Bereiche als Listen und wechselt bei langen Bereichen zu durchsuchbaren Dropdowns.',
               wizardPresentationAutoTitle: 'Auto',

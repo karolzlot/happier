@@ -5723,6 +5723,12 @@ export const fr: TranslationStructure = {
         newTagConfirm: 'Ajouter',
     },
 
+    sessionDrafts: {
+        sectionTitle: 'Brouillons', badge: 'Brouillon', untitled: 'Brouillon sans titre', continueEditing: 'Continuer la modification', startAnother: 'En commencer un autre',
+        status: { offline: 'Hors ligne', syncing: 'Synchronisation', conflict: 'Conflit', machineUnavailable: 'Machine indisponible', attachmentNeedsAttention: 'Pièce jointe à vérifier', startInterrupted: 'Démarrage interrompu' },
+        new: { action: 'Nouveau brouillon' }, delete: { action: 'Supprimer le brouillon', confirmTitle: 'Supprimer le brouillon ?', confirmDescription: 'Ce brouillon sera supprimé de vos appareils.' },
+        conflict: { title: 'Conflit de brouillon', description: 'Ce champ a changé sur un autre appareil.', mine: 'Sur cet appareil', synced: 'Synchronisé', useSynced: 'Utiliser la version synchronisée', keepDevice: 'Garder cette version', copyMine: 'Copier ma version', copied: 'Copié', copyFailed: 'Copie impossible', field: { text: 'Texte', mentions: 'Références', attachments: 'Pièces jointes', recipient: 'Destinataire', agentContinuation: 'Suite de l’agent', executionRunDelivery: 'Livraison de l’exécution' } },
+    },
     sessionsList: {
         serverHeader: ({ server }: { server: string }) => `Serveur : ${server}`,
         storagePersistedTab: 'Happier',
@@ -7317,6 +7323,14 @@ export const fr: TranslationStructure = {
     },
 
 settingsSession: {
+    newSessionDraftEntry: {
+        title: 'Brouillons de nouvelle session',
+        footer: 'Choisissez si Nouvelle session reprend le brouillon de cet appareil ou en ouvre un nouveau.',
+        resumeTitle: 'Reprendre le brouillon précédent',
+        resumeSubtitle: 'Continuez le brouillon commencé depuis Nouvelle session sur cet appareil.',
+        freshTitle: 'Toujours repartir de zéro',
+        freshSubtitle: 'Ouvrez un nouveau brouillon à chaque sélection de Nouvelle session.',
+    },
 	          sessionList: {
 	              title: 'Liste des sessions',
 	              footer: 'Apparence et comportement de la liste des sessions dans la barre latérale.',
@@ -7899,6 +7913,9 @@ settingsSession: {
               wizardColumnsTitle: 'Mise en page sur deux colonnes',
               wizardColumnsEnabledSubtitle: 'Place les sélecteurs liés côte à côte sur les écrans larges.',
               wizardColumnsDisabledSubtitle: 'Empile tous les sélecteurs de l’assistant sur une seule colonne.',
+              defaultWorktreeTitle: 'Créer un worktree pour les nouvelles sessions',
+              defaultWorktreeEnabledSubtitle: 'Démarrer chaque nouvelle session Git dans un nouveau worktree.',
+              defaultWorktreeDisabledSubtitle: 'Démarrer les nouvelles sessions Git dans le dossier sélectionné.',
               wizardPresentationTitle: 'Disposition des sélecteurs de l’assistant',
               wizardPresentationFooter: 'Le mode auto garde les sections courtes en listes et bascule les sections longues en menus déroulants avec recherche.',
               wizardPresentationAutoTitle: 'Auto',

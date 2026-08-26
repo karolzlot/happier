@@ -223,6 +223,12 @@ async function setupUseCreateNewSessionHarness() {
         })),
     }));
     vi.doMock('@/sync/domains/state/persistence', () => ({
+        getPersistenceStorage: () => ({
+            getString: () => undefined,
+            set: vi.fn(),
+            delete: vi.fn(),
+            getAllKeys: () => [],
+        }),
         clearNewSessionDraft: clearNewSessionDraftSpy,
         loadChangesCursor: () => null,
         loadDeviceAnalyticsId: () => null,
@@ -412,6 +418,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -472,6 +479,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -524,7 +532,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         machineSpawnNewSessionSpy.mockImplementationOnce(async (options: unknown) => {
             captured.value = options as SpawnPayloadCapture;
-            return { type: 'success', sessionId: 'sess_target' };
+            return { type: 'success', sessionId: 'sess_target', pendingFirstInputTransferred: true };
         });
 
         let handleCreateSession: null | (() => Promise<void>) = null;
@@ -539,6 +547,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -590,6 +599,80 @@ describe('useCreateNewSession permission seeding', () => {
         expect(followUpSpawnedSessionWithServerScopeSpy).not.toHaveBeenCalled();
     });
 
+    it('sends the first turn from the UI when the transport did not transfer it', async () => {
+        const {
+            useCreateNewSession,
+            followUpSpawnedSessionWithServerScopeSpy,
+            machineSpawnNewSessionSpy,
+        } = await setupUseCreateNewSessionHarness();
+
+        machineSpawnNewSessionSpy.mockResolvedValueOnce({
+            type: 'success',
+            sessionId: 'sess_target',
+            pendingFirstInputTransferred: false,
+        });
+
+        let handleCreateSession: null | (() => Promise<void>) = null;
+        const settings = { experiments: false } as unknown as Settings;
+        const machineEnvPresence: UseMachineEnvPresenceResult = {
+            isPreviewEnvSupported: false,
+            isLoading: false,
+            meta: {},
+            refreshedAt: null,
+            refresh: () => {},
+        };
+
+        function Test() {
+            const hook = useCreateNewSession({
+                draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
+                launchIntentSignature: 'test-launch-intent',
+                router: { push: vi.fn(), replace: vi.fn() },
+                selectedMachineId: 'm1',
+                selectedPath: '/tmp',
+                selectedMachine: {
+                    metadata: {},
+                    daemonState: { startedWithCliVersion: '0.2.10' },
+                },
+                setIsCreating: vi.fn(),
+                setIsResumeSupportChecking: vi.fn(),
+                settings,
+                useProfiles: false,
+                selectedProfileId: null,
+                profileMap: new Map(),
+                recentMachinePaths: [],
+                agentType: 'opencode' as any,
+                permissionMode: 'default' as PermissionMode,
+                modelMode: 'default' as any,
+                promptStore: createNewSessionPromptStore('do not lose me'),
+                resumeSessionId: '',
+                agentNewSessionOptions: null,
+                machineEnvPresence,
+                secrets: [],
+                secretBindingsByProfileId: {},
+                selectedSecretIdByProfileIdByEnvVarName: {},
+                sessionOnlySecretValueByProfileIdByEnvVarName: {},
+                selectedMachineCapabilities: null,
+                targetServerId: 'server-a',
+                allowedTargetServerIds: ['server-a'],
+            });
+
+            handleCreateSession = hook.handleCreateSession as () => Promise<void>;
+            return React.createElement('View');
+        }
+
+        await renderScreen(React.createElement(Test));
+
+        await act(async () => {
+            await handleCreateSession?.();
+        });
+
+        expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'sess_target',
+            initialMessageText: 'do not lose me',
+            messageLocalId: expect.stringMatching(/^first-turn-/),
+        }));
+    });
+
     it('carries the composer structured-input envelope into the first turn, merged with the model seed', async () => {
         // The new-session composer builds `mentions[]` exactly like the session composer, but its
         // first turn is sent by this hook rather than by `SessionView`. Without this the envelope
@@ -614,6 +697,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+                draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
                 launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -675,7 +759,7 @@ describe('useCreateNewSession permission seeding', () => {
         }));
     });
 
-    it('sets a created session goal from a /goal initial prompt without sending the objective text', async () => {
+    it('preserves a /goal initial prompt until the created session publishes callable goal controls', async () => {
         const {
             useCreateNewSession,
             followUpSpawnedSessionWithServerScopeSpy,
@@ -698,6 +782,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -738,15 +823,17 @@ describe('useCreateNewSession permission seeding', () => {
 
         expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenNthCalledWith(1, expect.objectContaining({
             sessionId: 'sess_goal',
-            initialMessageText: '',
+            initialMessageText: '/goal Ship slash support',
         }));
         expect(followUpSpawnedSessionWithServerScopeSpy).toHaveBeenCalledTimes(1);
-        expect(syncSendMessageSpy).not.toHaveBeenCalled();
-        expect(sessionGoalSetSpy).toHaveBeenCalledWith(
+        expect(syncSendMessageSpy).toHaveBeenCalledWith(
             'sess_goal',
-            { objective: 'Ship slash support' },
-            { serverId: 'server-a' },
+            '/goal Ship slash support',
+            undefined,
+            undefined,
+            undefined,
         );
+        expect(sessionGoalSetSpy).not.toHaveBeenCalled();
     });
 
     it('passes connectedServices bindings into machineSpawnNewSession when provided', async () => {
@@ -764,6 +851,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -836,6 +924,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -903,6 +992,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -965,6 +1055,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -1031,6 +1122,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -1097,6 +1189,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -1180,6 +1273,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
@@ -1269,6 +1363,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
@@ -1352,6 +1447,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
@@ -1441,6 +1537,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: routerPush, replace: routerReplace },
                 selectedMachineId: 'm1',
@@ -1582,6 +1679,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: routerPush, replace: routerReplace },
                 selectedMachineId: 'm1',
@@ -1678,6 +1776,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test(props: Readonly<{ automationDraft: NewSessionAutomationDraft }>) {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router,
                 selectedMachineId: 'm1',
@@ -1780,6 +1879,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test(props: Readonly<{ automationDraft: NewSessionAutomationDraft }>) {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router,
                 selectedMachineId: 'm1',
@@ -1890,6 +1990,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
@@ -1959,6 +2060,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
@@ -2051,6 +2153,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',
@@ -2141,6 +2244,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
@@ -2211,6 +2315,7 @@ describe('useCreateNewSession permission seeding', () => {
 
         function Test() {
             const hook = useCreateNewSession({
+        draftId: '8e0a5dd1-b1df-43dd-b51e-b7787b30362e',
         launchIntentSignature: 'test-launch-intent',
                 router: { push: vi.fn(), replace: vi.fn() },
                 selectedMachineId: 'm1',

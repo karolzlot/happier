@@ -16,8 +16,12 @@ import type {
 import {
   AcpPromptSubmissionPhaseError,
   type AcpPromptSubmissionEvidence,
+  type AcpPermissionHandler,
 } from '@/agent/acp/AcpBackend';
+import { abortPendingAcpPermissionRequests } from '@/agent/acp/backend/permissions/acpPermissionFinalization';
 import { killProcessTree } from '@/agent/runtime/process/killProcessTree';
+import { materializeProtectedTempTextArtifact, type ProtectedTempTextArtifact } from '@/utils/fs/protectedTempTextArtifact';
+import { PI_BRIDGE_CONFIG_PATH_FLAG } from '@/backends/pi/bridgeExtension/piBridgeExtensionEnv';
 import { logger } from '@/ui/logger';
 import {
   HAPPIER_CONNECTED_SERVICE_TARGET_MATERIALIZED_ROOT_ENV_KEY,
@@ -48,6 +52,13 @@ import {
   resolvePiSessionIdFromResumeReference,
 } from '../utils/piSessionFiles';
 import { attachPiRpcJsonlLineReader, type PiRpcJsonlLineReader } from './attachPiRpcJsonlLineReader';
+import {
+  buildPiContextTelemetryKeySuffix,
+  mergePiContextTelemetryIntoTokens,
+  parsePiContextTelemetryFromSessionStats,
+  parsePiContextTelemetryMarkerLine,
+  type PiContextTelemetry,
+} from './piContextTelemetryMarker';
 import { mapPiRpcEventToAgentMessages } from './eventMapping';
 import {
   createPiProviderFailureError,
@@ -63,6 +74,12 @@ import type {
   PiRpcSessionStatsData,
   PiRpcStateData,
 } from './types';
+import {
+  buildPiExtensionAskUserQuestionInput,
+  buildPiExtensionUiResponse,
+  parsePiBlockingExtensionUiRequest,
+  type PiExtensionUiResponse,
+} from './piExtensionUiRequest';
 import {
   createPiModelCatalogEntry,
   normalizePiThinkingEffort,
@@ -207,6 +224,8 @@ const PI_RPC_SESSION_OPEN_TIMEOUT_MS = 60_000;
 const DEFAULT_PI_RPC_COMPACTION_RESUME_GRACE_MS = 30_000;
 const DEFAULT_PI_RPC_AGENT_END_SETTLE_MS = 250;
 const DEFAULT_PI_RPC_AGENT_END_BUSY_GRACE_MS = 30_000;
+const PI_RPC_RECOVERABLE_ASSISTANT_ERROR_PATTERN =
+  /(?:context[_ -]?length[_ -]?exceeded|server[_ -]?is[_ -]?overloaded|service[_ -]?unavailable|websocket[^\n]*closed|\bECONN(?:RESET|REFUSED|ABORTED)\b)/iu;
 
 const PI_RPC_TURN_STALL_TIMEOUT_ENV = 'HAPPIER_PI_RPC_TURN_STALL_TIMEOUT_MS';
 const PI_RPC_COMPACTION_RESUME_GRACE_ENV = 'HAPPIER_PI_RPC_COMPACTION_RESUME_GRACE_MS';
@@ -574,6 +593,16 @@ export type PiRpcSpawnOptions = {
   args: string[];
   env?: Record<string, string>;
   happierSessionId?: string | null;
+  /**
+   * Residual system-prompt content appended to pi's prompt via `--append-system-prompt`.
+   * Delivered as a protected temporary file (pi treats an existing path as a file source
+   * and re-reads it on resource reload): literal argv would be process-list-visible and
+   * unbounded. Materialized once before the first spawn, retained for the backend
+   * lifetime (process restarts reuse it), removed on disposal.
+   */
+  appendSystemPromptText?: string | null;
+  toolsBridgeConfigText?: string | null;
+  permissionHandler?: AcpPermissionHandler;
 };
 
 export class PiRpcBackend implements AgentBackend {
@@ -583,14 +612,22 @@ export class PiRpcBackend implements AgentBackend {
     args: string[];
     env: Record<string, string>;
     happierSessionId: string | null;
+    appendSystemPromptText: string | null;
+    toolsBridgeConfigText: string | null;
   }>;
 
   private process: ChildProcessWithoutNullStreams | null = null;
+  private appendSystemPromptArtifact: ProtectedTempTextArtifact | null = null;
+  private toolsBridgeConfigArtifact: ProtectedTempTextArtifact | null = null;
+  private readonly availableCommandNames = new Set<string>();
+  private readonly availableExtensionCommandNames = new Set<string>();
   private stdoutLineReader: PiRpcJsonlLineReader | null = null;
   private stderrLineReader: PiRpcJsonlLineReader | null = null;
   private readonly messageHandlers = new Set<AgentMessageHandler>();
   private readonly pendingRequests = new Map<string, PendingRpcRequest>();
   private readonly openPromptRequestIds = new Set<string>();
+  private readonly activeExtensionUiRequestIds = new Set<string>();
+  private readonly permissionHandler: AcpPermissionHandler | null;
   private pendingTurn: PendingTurn | null = null;
   private pendingTurnBarrier: Deferred<void> | null = null;
   private sessionId: string | null = null;
@@ -604,6 +641,12 @@ export class PiRpcBackend implements AgentBackend {
   private sessionModelState: { currentModelId: string; availableModels: Array<{ id: string; name: string; description?: string; modelOptions?: unknown[] }> } | null =
     null;
   private lastPublishedUsageKey: string | null = null;
+  /** Latest live context telemetry parsed from the bridge extension's stderr markers, if any. */
+  private latestContextTelemetry: PiContextTelemetry | null = null;
+  private assistantBoundaryContextTelemetry: PiContextTelemetry | null = null;
+  private assistantMessageEndAwaitingContextTelemetry = false;
+  /** Serializes usage-stats publishes so overlapping triggers cannot double-emit. */
+  private usageStatsPublishChain: Promise<void> = Promise.resolve();
   private readonly connectedServiceRuntimeAuthAdapter = createPiConnectedServiceRuntimeAuthAdapter();
   private disposed = false;
   /**
@@ -619,12 +662,18 @@ export class PiRpcBackend implements AgentBackend {
   private readonly recentStderrLines: string[] = [];
 
   constructor(options: PiRpcSpawnOptions) {
+    this.permissionHandler = options.permissionHandler ?? null;
     this.options = {
       cwd: options.cwd,
       command: options.command,
       args: [...options.args],
       env: { ...(options.env ?? {}) },
       happierSessionId: asNonEmptyString(options.happierSessionId) ?? null,
+      appendSystemPromptText:
+        typeof options.appendSystemPromptText === 'string' && options.appendSystemPromptText.trim().length > 0
+          ? options.appendSystemPromptText
+          : null,
+      toolsBridgeConfigText: asNonEmptyString(options.toolsBridgeConfigText) ?? null,
     };
   }
 
@@ -910,6 +959,22 @@ export class PiRpcBackend implements AgentBackend {
     await this.sendPromptWithAdmission(sessionId, prompt).completion;
   }
 
+  isProviderNativeCommand(prompt: string): boolean {
+    const name = this.readProviderNativeCommandName(prompt);
+    return name.length > 0 && this.availableCommandNames.has(name);
+  }
+
+  private isProviderExtensionCommand(prompt: string): boolean {
+    const name = this.readProviderNativeCommandName(prompt);
+    return name.length > 0 && this.availableExtensionCommandNames.has(name);
+  }
+
+  private readProviderNativeCommandName(prompt: string): string {
+    if (!prompt.startsWith('/')) return '';
+    const spaceIndex = prompt.indexOf(' ');
+    return spaceIndex === -1 ? prompt.slice(1) : prompt.slice(1, spaceIndex);
+  }
+
   async sendPromptWithEvidence(
     sessionId: SessionId,
     prompt: string,
@@ -979,12 +1044,12 @@ export class PiRpcBackend implements AgentBackend {
     const maybeRestart = this.maybeRestartForUpdatedAuthJson();
     try {
       if (maybeRestart) await maybeRestart;
-      const message = prompt.trim();
-      if (!message) {
+      if (!prompt.trim()) {
         settleAdmission({ status: 'rejected_before_effect', error: new Error('Prompt text is blank') });
         settleBarrier();
         return;
       }
+      const message = prompt;
 
       // Ensure we have a live process *before* allocating a pending turn.
       // If the process died between turns, `ensureProcess()` may need to restart and reattach via --session.
@@ -1006,7 +1071,9 @@ export class PiRpcBackend implements AgentBackend {
       }
 
       await this.ensureConnectedBrokerReadyForProviderCommand();
-      const turn = this.createPendingTurn(this.getPendingTurnStallTimeoutMs());
+      const providerExtensionCommand = this.isProviderExtensionCommand(message);
+      const pendingTurn = this.createPendingTurn(this.getPendingTurnStallTimeoutMs());
+      const turn = pendingTurn.promise;
       providerSendAttempted = true;
       try {
         await this.sendCommand({ type: 'prompt', message }, 30_000, { processAlreadyEnsured: true });
@@ -1020,6 +1087,27 @@ export class PiRpcBackend implements AgentBackend {
         throw promptError;
       }
       settleAdmission({ status: 'accepted' });
+      if (
+        providerExtensionCommand
+        && pendingTurn
+        && this.isCurrentPendingTurn(pendingTurn)
+        && !pendingTurn.agentStartObserved
+      ) {
+        // Pi acknowledges an extension command after its handler returns, but a handler may
+        // schedule an Agent turn whose event follows the acknowledgement. Reuse the existing
+        // event-ordering grace before deciding that the command was handled without a turn.
+        await delay(this.getAgentEndSettleMs());
+        const state = await this.getState().catch(() => null);
+        if (
+          this.isCurrentPendingTurn(pendingTurn)
+          && !pendingTurn.agentStartObserved
+          && state !== null
+          && state.isStreaming === false
+          && state.isCompacting === false
+        ) {
+          this.resolvePendingTurn();
+        }
+      }
       await turn;
       return;
     } catch (error) {
@@ -1089,10 +1177,9 @@ export class PiRpcBackend implements AgentBackend {
 
   async cancel(sessionId: SessionId): Promise<void> {
     this.assertSession(sessionId);
+    await abortPendingAcpPermissionRequests(this.permissionHandler, 'Pi turn cancelled');
     await this.sendCommand({ type: 'abort' });
-    if (!this.resolvePendingTurn()) {
-      this.emitMessage({ type: 'status', status: 'idle' });
-    }
+    if (this.pendingTurn) await this.pendingTurn.promise;
   }
 
   async waitForResponseComplete(timeoutMs?: number | null): Promise<void> {
@@ -1132,6 +1219,8 @@ export class PiRpcBackend implements AgentBackend {
     if (this.disposed) return;
     this.disposed = true;
 
+    await abortPendingAcpPermissionRequests(this.permissionHandler, 'Pi backend disposed');
+
     this.rejectAllPending(new Error('Pi backend disposed'));
     this.rejectPendingTurn(new Error('Pi backend disposed'));
 
@@ -1146,17 +1235,23 @@ export class PiRpcBackend implements AgentBackend {
 
     const child = this.process;
     this.process = null;
-    if (!child) return;
 
-    await stopPiRpcProcess(child);
+    // Terminal path: remove the protected append-system-prompt artifact with the backend.
+    if (!child) {
+      await this.cleanupProtectedSpawnArtifacts();
+      return;
+    }
+
+    try {
+      await stopPiRpcProcess(child);
+    } finally {
+      await this.cleanupProtectedSpawnArtifacts();
+    }
   }
 
   private async ensureProcess(): Promise<void> {
     if (this.disposed) {
       throw new Error('Pi backend is disposed');
-    }
-    if (this.processTransitionInFlight) {
-      await this.processTransitionInFlight;
     }
     if (this.process) return;
     if (this.sessionId) {
@@ -1166,7 +1261,81 @@ export class PiRpcBackend implements AgentBackend {
       return;
     }
 
-    this.spawnRpcProcess({ args: this.options.args });
+    await this.runProcessTransition(async () => {
+      if (this.disposed) throw new Error('Pi backend is disposed');
+      if (this.process) return;
+      await this.spawnRpcProcessWithProtectedArtifacts({
+        argsBeforeProtected: this.options.args,
+      });
+    });
+  }
+
+  private async cleanupProtectedSpawnArtifacts(): Promise<void> {
+    const appendSystemPromptArtifact = this.appendSystemPromptArtifact;
+    this.appendSystemPromptArtifact = null;
+    const toolsBridgeConfigArtifact = this.toolsBridgeConfigArtifact;
+    this.toolsBridgeConfigArtifact = null;
+    await Promise.all([
+      appendSystemPromptArtifact?.cleanup(),
+      toolsBridgeConfigArtifact?.cleanup(),
+    ]);
+  }
+
+  /**
+   * `--append-system-prompt` arguments for the current backend lifetime. The prompt text
+   * is materialized into a protected temporary file once; pi resolves an existing path as
+   * a file source and re-reads it on resource reload, so restarts within this backend
+   * reuse the same artifact. Materialization failure rejects and prevents the spawn.
+   */
+  private async resolveAppendSystemPromptArgs(): Promise<string[]> {
+    const text = this.options.appendSystemPromptText;
+    if (!text) return [];
+    if (!this.appendSystemPromptArtifact) {
+      this.appendSystemPromptArtifact = await materializeProtectedTempTextArtifact({
+        prefix: 'happier-pi-append-system-prompt-',
+        contents: text,
+      });
+    }
+    return ['--append-system-prompt', this.appendSystemPromptArtifact.path];
+  }
+
+  private async resolveToolsBridgeConfigArgs(): Promise<string[]> {
+    const text = this.options.toolsBridgeConfigText;
+    if (!text) return [];
+    if (!this.toolsBridgeConfigArtifact) {
+      this.toolsBridgeConfigArtifact = await materializeProtectedTempTextArtifact({
+        prefix: 'happier-pi-tools-bridge-config-',
+        contents: text,
+      });
+    }
+    return [`--${PI_BRIDGE_CONFIG_PATH_FLAG}`, this.toolsBridgeConfigArtifact.path];
+  }
+
+  private async resolveProtectedSpawnArtifactArgs(): Promise<string[]> {
+    return [
+      ...(await this.resolveToolsBridgeConfigArgs()),
+      ...(await this.resolveAppendSystemPromptArgs()),
+    ];
+  }
+
+  private async spawnRpcProcessWithProtectedArtifacts(params: Readonly<{
+    argsBeforeProtected: ReadonlyArray<string>;
+    argsAfterProtected?: ReadonlyArray<string>;
+  }>): Promise<void> {
+    try {
+      const protectedArgs = await this.resolveProtectedSpawnArtifactArgs();
+      if (this.disposed) throw new Error('Pi backend is disposed');
+      this.spawnRpcProcess({
+        args: [
+          ...params.argsBeforeProtected,
+          ...protectedArgs,
+          ...(params.argsAfterProtected ?? []),
+        ],
+      });
+    } catch (error) {
+      await this.cleanupProtectedSpawnArtifacts();
+      throw error;
+    }
   }
 
   private spawnRpcProcess(params: Readonly<{ args: string[] }>): void {
@@ -1196,6 +1365,16 @@ export class PiRpcBackend implements AgentBackend {
     this.stdoutLineReader = stdoutLineReader;
     this.stderrLineReader = stderrLineReader;
 
+    const detachSpawnedChild = () => {
+      if (this.process !== spawnedChild) return;
+      this.process = null;
+      stdoutLineReader.close();
+      stderrLineReader.close();
+      if (this.stdoutLineReader === stdoutLineReader) this.stdoutLineReader = null;
+      if (this.stderrLineReader === stderrLineReader) this.stderrLineReader = null;
+      void this.cleanupProtectedSpawnArtifacts();
+    };
+
     const handleIoError = (error: unknown) => {
       if (this.process !== spawnedChild) return;
       const resolved = asError(error);
@@ -1224,6 +1403,7 @@ export class PiRpcBackend implements AgentBackend {
       });
       this.rejectAllPending(new Error(`Pi process error: ${error instanceof Error ? error.message : String(error)}`));
       this.rejectPendingTurn(new Error('Pi process terminated'));
+      detachSpawnedChild();
     });
 
     child.on('exit', (code, signal) => {
@@ -1246,11 +1426,7 @@ export class PiRpcBackend implements AgentBackend {
       } else {
         this.rejectPendingTurn(new Error('Pi process exited'));
       }
-      this.process = null;
-      stdoutLineReader.close();
-      stderrLineReader.close();
-      if (this.stdoutLineReader === stdoutLineReader) this.stdoutLineReader = null;
-      if (this.stderrLineReader === stderrLineReader) this.stderrLineReader = null;
+      detachSpawnedChild();
     });
   }
 
@@ -1424,7 +1600,10 @@ export class PiRpcBackend implements AgentBackend {
     lifecycle?: PiRpcSessionOpenLifecycle;
   }>): Promise<PiRpcStateData> {
     await this.stopRpcProcessForRestart();
-    this.spawnRpcProcess({ args: [...this.options.args, '--session', params.sessionArg] });
+    await this.spawnRpcProcessWithProtectedArtifacts({
+      argsBeforeProtected: this.options.args,
+      argsAfterProtected: ['--session', params.sessionArg],
+    });
 
     try {
       const lifecycle = params.lifecycle ?? this.createSessionOpenLifecycle();
@@ -1452,6 +1631,7 @@ export class PiRpcBackend implements AgentBackend {
   }
 
   private async stopRpcProcessForRestart(): Promise<void> {
+    await abortPendingAcpPermissionRequests(this.permissionHandler, 'Pi backend restarting');
     this.rejectAllPending(new Error('Pi restarting'));
     this.rejectPendingTurn(new Error('Pi restarting'));
 
@@ -1581,6 +1761,13 @@ export class PiRpcBackend implements AgentBackend {
     return errorMessage ?? 'Pi assistant message failed';
   }
 
+  private isRecoverablePiAssistantError(event: Record<string, unknown>): boolean {
+    const classification = this.classifyPiAssistantRuntimeAuthFailure(event);
+    if (classification) return classification.kind === 'capacity';
+    const detail = this.readPiAssistantErrorMessage(event);
+    return detail !== null && PI_RPC_RECOVERABLE_ASSISTANT_ERROR_PATTERN.test(detail);
+  }
+
   private classifyPiAssistantRuntimeAuthFailure(event: Record<string, unknown>) {
     const message = asRecord(event.message);
     return this.classifyPiRuntimeAuthFailure({
@@ -1661,12 +1848,15 @@ export class PiRpcBackend implements AgentBackend {
     // turn lifecycle (`agent_end`/willRetry, the compaction-resume grace, and the `get_state`
     // liveness probe) instead of this event. The recoverable error carries no surfaceable assistant
     // text, so suppressing the status here does not hide anything from the transcript.
-    if (!classification) return;
-    if (classification.kind === 'capacity') {
-      void this.reportPiRuntimeAuthFailureToDaemon(classification);
+    if (this.isRecoverablePiAssistantError(event)) {
+      if (classification) {
+        void this.reportPiRuntimeAuthFailureToDaemon(classification);
+      }
       return;
     }
-    void this.reportPiRuntimeAuthFailureToDaemon(classification);
+    if (classification) {
+      void this.reportPiRuntimeAuthFailureToDaemon(classification);
+    }
     this.surfacePiProviderFailure(failure, classification);
   }
 
@@ -1728,7 +1918,18 @@ export class PiRpcBackend implements AgentBackend {
   }
 
   private handleEvent(event: Record<string, unknown>): void {
+    const extensionRequest = parsePiBlockingExtensionUiRequest(event);
+    if (extensionRequest) {
+      this.notePendingTurnActivity(event);
+      void this.handleBlockingExtensionUiRequest(extensionRequest, this.process);
+      return;
+    }
     const normalizedEvent = this.normalizeCompactionLifecycleEvent(event);
+    if (normalizedEvent.type === 'compaction_start' || normalizedEvent.type === 'compaction_end') {
+      this.latestContextTelemetry = null;
+      this.assistantBoundaryContextTelemetry = null;
+      this.assistantMessageEndAwaitingContextTelemetry = false;
+    }
     this.notePendingTurnActivity(normalizedEvent);
 
     const mappedMessages = mapPiRpcEventToAgentMessages(normalizedEvent);
@@ -1742,6 +1943,28 @@ export class PiRpcBackend implements AgentBackend {
 
     this.handlePiAssistantFailureEvent(normalizedEvent);
     this.handlePiAssistantMessageEndTerminalFailureEvent(normalizedEvent);
+
+    // Publish usage/context telemetry the moment an assistant message settles — BEFORE any
+    // tool calls it requested start executing — so a slow tool call shows the fresh context
+    // size on the badge instead of waiting for the whole turn to go idle. Gated on bridge
+    // telemetry being present: only Happier-bound sessions (extension markers flowing) get
+    // the mid-turn publish; plain embedders keep the idle-time cadence without extra
+    // mid-turn RPC traffic.
+    if (normalizedEvent.type === 'message_end') {
+      const message = asRecord(normalizedEvent.message);
+      if (message?.role === 'assistant') {
+        this.assistantBoundaryContextTelemetry = null;
+        if (this.latestContextTelemetry) {
+          const contextTelemetry = this.latestContextTelemetry;
+          this.latestContextTelemetry = null;
+          this.assistantBoundaryContextTelemetry = contextTelemetry;
+          this.assistantMessageEndAwaitingContextTelemetry = false;
+          this.scheduleUsageStatsPublish(contextTelemetry);
+        } else {
+          this.assistantMessageEndAwaitingContextTelemetry = true;
+        }
+      }
+    }
 
     if (normalizedEvent.type === 'turn_failed') {
       this.handlePiTurnFailedEvent(normalizedEvent);
@@ -1762,14 +1985,17 @@ export class PiRpcBackend implements AgentBackend {
           this.pendingTurn.agentEndActivityEpoch = null;
           this.cancelPendingTurnAgentEndSettle(this.pendingTurn);
           this.armPendingTurnInactivityTimer(this.pendingTurn);
-        } else if (this.pendingTurn.providerFailureDiagnostic) {
-          this.surfacePiProviderFailure(this.pendingTurn.providerFailureDiagnostic);
-          return;
-        } else if (this.pendingTurn.recoverableAssistantErrorObserved) {
+        } else if (
+          this.pendingTurn.recoverableAssistantErrorObserved
+          && normalizedEvent.willRetry !== false
+        ) {
           this.pendingTurn.agentEndObserved = false;
           this.pendingTurn.agentEndActivityEpoch = null;
           this.cancelPendingTurnAgentEndSettle(this.pendingTurn);
           this.armPendingTurnInactivityTimer(this.pendingTurn);
+        } else if (this.pendingTurn.providerFailureDiagnostic) {
+          this.surfacePiProviderFailure(this.pendingTurn.providerFailureDiagnostic);
+          return;
         } else {
           this.pendingTurn.agentEndObserved = true;
           this.pendingTurn.agentEndActivityEpoch = this.pendingTurn.activityEpoch;
@@ -1777,7 +2003,7 @@ export class PiRpcBackend implements AgentBackend {
         }
       } else {
         this.emitMessage({ type: 'status', status: 'idle' });
-        void this.publishUsageStatsBestEffort();
+        this.scheduleUsageStatsPublish();
       }
     }
 
@@ -1792,7 +2018,72 @@ export class PiRpcBackend implements AgentBackend {
     }
   }
 
-  private async publishUsageStatsBestEffort(): Promise<void> {
+  private async handleBlockingExtensionUiRequest(
+    request: NonNullable<ReturnType<typeof parsePiBlockingExtensionUiRequest>>,
+    child: ChildProcessWithoutNullStreams | null,
+  ): Promise<void> {
+    if (!child || this.activeExtensionUiRequestIds.has(request.id)) return;
+    this.activeExtensionUiRequestIds.add(request.id);
+    let providerTimedOut = false;
+    const timeout = typeof request.timeout === 'number'
+      ? setTimeout(() => {
+        providerTimedOut = true;
+        this.permissionHandler?.cancelPendingRequest?.(request.id, 'Pi extension dialog timed out');
+      }, request.timeout)
+      : null;
+    timeout?.unref?.();
+    try {
+      const result = this.permissionHandler
+        ? await this.permissionHandler.handleToolCall(
+          request.id,
+          'AskUserQuestion',
+          buildPiExtensionAskUserQuestionInput(request),
+        )
+        : { decision: 'denied' as const };
+      if (providerTimedOut) return;
+      await this.writeExtensionUiResponse(child, buildPiExtensionUiResponse(request, result));
+    } catch {
+      if (providerTimedOut) return;
+      await this.writeExtensionUiResponse(child, {
+        type: 'extension_ui_response',
+        id: request.id,
+        cancelled: true,
+      }).catch(() => undefined);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.activeExtensionUiRequestIds.delete(request.id);
+    }
+  }
+
+  private async writeExtensionUiResponse(
+    child: ChildProcessWithoutNullStreams,
+    response: PiExtensionUiResponse,
+  ): Promise<void> {
+    if (this.process !== child || !child.stdin) {
+      throw new Error('Pi process changed before extension UI response');
+    }
+    await new Promise<void>((resolve, reject) => {
+      child.stdin.write(`${JSON.stringify(response)}\n`, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+
+  /** Schedule a serialized usage-stats publish; safe to call from any event path. */
+  private scheduleUsageStatsPublish(contextTelemetryOverride?: PiContextTelemetry | null): Promise<void> {
+    const contextTelemetry = contextTelemetryOverride === undefined
+      ? this.assistantBoundaryContextTelemetry
+      : contextTelemetryOverride;
+    this.usageStatsPublishChain = this.usageStatsPublishChain
+      .then(() => this.publishUsageStatsBestEffort(contextTelemetry))
+      .catch(() => {
+        // best-effort; publish errors are already swallowed inside
+      });
+    return this.usageStatsPublishChain;
+  }
+
+  private async publishUsageStatsBestEffort(contextTelemetryOverride: PiContextTelemetry | null = null): Promise<void> {
       if (this.disposed) return;
       if (!this.process) return;
 
@@ -1804,7 +2095,15 @@ export class PiRpcBackend implements AgentBackend {
       const assistantMessagesRaw = stats.assistantMessages;
       const assistantMessages =
         typeof assistantMessagesRaw === 'number' && Number.isFinite(assistantMessagesRaw) ? assistantMessagesRaw : null;
-      const rawKey = assistantMessages !== null ? `${sessionId}:${assistantMessages}` : sessionId;
+      // Live context telemetry: prefer pi's own `stats.contextUsage` (the estimate it uses
+      // for compaction); fall back to the bridge extension's stderr marker when stats lack
+      // it (older pi builds). The suffix lets a changed live-context value re-publish even
+      // when the assistant-message counter has not advanced (compaction, retries).
+      const contextTelemetry = Object.prototype.hasOwnProperty.call(stats, 'contextUsage')
+        ? parsePiContextTelemetryFromSessionStats(stats)
+        : contextTelemetryOverride ?? this.latestContextTelemetry;
+      const rawKey = (assistantMessages !== null ? `${sessionId}:${assistantMessages}` : sessionId)
+        + (contextTelemetry ? buildPiContextTelemetryKeySuffix(contextTelemetry) : '');
       if (this.lastPublishedUsageKey === rawKey) return;
       this.lastPublishedUsageKey = rawKey;
 
@@ -1823,7 +2122,8 @@ export class PiRpcBackend implements AgentBackend {
       if (cacheRead !== null) tokens.cache_read = cacheRead;
       if (cacheWrite !== null) tokens.cache_creation = cacheWrite;
       if (total !== null) tokens.total = total;
-      if (Object.keys(tokens).length === 0) return;
+      if (Object.keys(tokens).length === 0 && !contextTelemetry) return;
+      if (contextTelemetry) mergePiContextTelemetryIntoTokens(tokens, contextTelemetry);
 
       const costRaw = stats.cost;
       const costTotal = typeof costRaw === 'number' && Number.isFinite(costRaw) && costRaw >= 0 ? costRaw : null;
@@ -1842,6 +2142,19 @@ export class PiRpcBackend implements AgentBackend {
   private handleStderrLine(line: string): void {
     const trimmed = line.trim();
     if (!trimmed) return;
+    // Bridge-extension context telemetry markers are consumed programmatically and must not
+    // surface as terminal-output noise in the transcript.
+    const contextTelemetry = parsePiContextTelemetryMarkerLine(trimmed);
+    if (contextTelemetry) {
+      this.latestContextTelemetry = contextTelemetry;
+      if (this.assistantMessageEndAwaitingContextTelemetry) {
+        this.latestContextTelemetry = null;
+        this.assistantBoundaryContextTelemetry = contextTelemetry;
+        this.assistantMessageEndAwaitingContextTelemetry = false;
+        this.scheduleUsageStatsPublish(contextTelemetry);
+      }
+      return;
+    }
     this.recentStderrLines.push(trimmed);
     if (this.recentStderrLines.length > PI_RPC_STDERR_TAIL_MAX_LINES) {
       this.recentStderrLines.splice(0, this.recentStderrLines.length - PI_RPC_STDERR_TAIL_MAX_LINES);
@@ -1954,9 +2267,9 @@ export class PiRpcBackend implements AgentBackend {
     return true;
   }
 
-  private createPendingTurn(timeoutMs: number): Promise<void> {
+  private createPendingTurn(timeoutMs: number): PendingTurn {
     if (this.pendingTurn) {
-      return Promise.reject(new Error('Pi pending turn already exists'));
+      throw new Error('Pi pending turn already exists');
     }
     let resolveTurn: (() => void) | null = null;
     let rejectTurn: ((error: Error) => void) | null = null;
@@ -1996,7 +2309,11 @@ export class PiRpcBackend implements AgentBackend {
     };
     this.pendingTurn = pending;
     this.armPendingTurnInactivityTimer(pending);
-    return promise;
+    return pending;
+  }
+
+  private isCurrentPendingTurn(pending: PendingTurn): boolean {
+    return this.pendingTurn === pending;
   }
 
   private resolvePendingTurn(): boolean {
@@ -2228,8 +2545,29 @@ export class PiRpcBackend implements AgentBackend {
         const stopReason = asNonEmptyString(message.stopReason ?? message.stop_reason);
         pending.lastAssistantStopReason = stopReason;
         const errorMessage = asNonEmptyString(message.errorMessage ?? message.error_message ?? event.errorMessage ?? event.error_message);
-        pending.recoverableAssistantErrorObserved = stopReason === 'error' || Boolean(errorMessage);
+        const assistantFailed = stopReason === 'error' || Boolean(errorMessage);
+        pending.recoverableAssistantErrorObserved = assistantFailed
+          ? this.isRecoverablePiAssistantError(event)
+          : false;
+        if (!pending.recoverableAssistantErrorObserved) {
+          pending.providerFailureDiagnostic = null;
+        }
       }
+    }
+
+    if (
+      pending.recoverableAssistantErrorObserved
+      && (
+        type === 'message_update'
+        || type === 'tool_execution_start'
+        || type === 'tool_execution_update'
+        || type === 'tool_execution_end'
+      )
+    ) {
+      // Provider work after a recoverable assistant error proves that Pi resumed
+      // the same turn. Do not let the earlier diagnostic poison its final agent_end.
+      pending.recoverableAssistantErrorObserved = false;
+      pending.providerFailureDiagnostic = null;
     }
 
     if (type === 'compaction_start') {
@@ -2403,7 +2741,7 @@ export class PiRpcBackend implements AgentBackend {
 
     if (pending.agentEndObserved) {
       this.resolvePendingTurn();
-      void this.publishUsageStatsBestEffort();
+      void this.scheduleUsageStatsPublish();
       return;
     }
 
@@ -2466,7 +2804,7 @@ export class PiRpcBackend implements AgentBackend {
     }
 
     this.resolvePendingTurn();
-    void this.publishUsageStatsBestEffort();
+    void this.scheduleUsageStatsPublish();
   }
 
   private schedulePendingTurnCompletionBusyGrace(pending: PendingTurn): void {
@@ -2570,7 +2908,7 @@ export class PiRpcBackend implements AgentBackend {
       });
     }
     this.resolvePendingTurn();
-    void this.publishUsageStatsBestEffort();
+    void this.scheduleUsageStatsPublish();
   }
 
   private resolvePendingTurnAsCompactionPaused(pending: PendingTurn): void {
@@ -2600,7 +2938,7 @@ export class PiRpcBackend implements AgentBackend {
       },
     });
     this.resolvePendingTurn();
-    void this.publishUsageStatsBestEffort();
+    void this.scheduleUsageStatsPublish();
   }
 
   private rejectAllPending(error: Error): void {
@@ -2696,23 +3034,42 @@ export class PiRpcBackend implements AgentBackend {
     try {
       const commands = await this.getCommands();
       const commandList = Array.isArray(commands.commands) ? commands.commands : [];
+      const nextCommandNames = new Set<string>();
+      const nextExtensionCommandNames = new Set<string>();
       const availableCommands = commandList
         .map((entry) => {
           const item = asRecord(entry);
           const name = asNonEmptyString(item?.name);
           if (!name) return null;
           const description = asNonEmptyString(item?.description) ?? undefined;
+          const source = asNonEmptyString(item?.source);
           return {
             name: name.startsWith('/') ? name : `/${name}`,
             ...(description ? { description } : {}),
+            ...(source ? { source } : {}),
           };
         })
-        .filter((entry): entry is { name: string; description?: string } => entry !== null);
+        .filter((entry): entry is { name: string; description?: string; source?: string } => entry !== null);
+
+      for (const command of availableCommands) {
+        const name = command.name.slice(1).trim();
+        if (name) {
+          nextCommandNames.add(name);
+          if (command.source === 'extension') nextExtensionCommandNames.add(name);
+        }
+      }
+
+      this.availableCommandNames.clear();
+      for (const name of nextCommandNames) this.availableCommandNames.add(name);
+      this.availableExtensionCommandNames.clear();
+      for (const name of nextExtensionCommandNames) this.availableExtensionCommandNames.add(name);
 
       this.emitMessage({
         type: 'event',
         name: 'available_commands_update',
-        payload: { availableCommands },
+        payload: {
+          availableCommands: availableCommands.map(({ name, description }) => ({ name, ...(description ? { description } : {}) })),
+        },
       });
     } catch {
       // Best-effort: commands introspection should not block session start/resume.

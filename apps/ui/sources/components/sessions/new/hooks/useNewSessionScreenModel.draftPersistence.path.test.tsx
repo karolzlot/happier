@@ -32,8 +32,8 @@ describe('useNewSessionScreenModel (draft hydration — path)', () => {
         standardCleanup();
     });
 
-    beforeEach(() => {
-        resetDraftPersistenceState();
+    beforeEach(async () => {
+        await resetDraftPersistenceState();
     });
 
     it('keeps the current route stable and exposes a shared path popover when the new-session route starts without a dataId', async () => {
@@ -136,11 +136,9 @@ describe('useNewSessionScreenModel (draft hydration — path)', () => {
         expect(model?.simpleProps?.selectedWorkspaceId).toBeUndefined();
         expect(model?.simpleProps?.selectedWorkspaceLocationId).toBeUndefined();
         expect(model?.simpleProps?.selectedWorkspaceCheckoutId).toBeUndefined();
-        expect(model?.simpleProps?.checkoutCreationDraft).toBeNull();
         expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
             authoringDraft: expect.objectContaining({
                 directory: '/repo/unlinked',
-                checkoutCreationDraft: null,
             }),
         }));
 
@@ -160,9 +158,6 @@ describe('useNewSessionScreenModel (draft hydration — path)', () => {
         }));
         expect(saveNewSessionDraftMock.mock.calls.at(-1)?.[0]).not.toEqual(expect.objectContaining({
             selectedWorkspaceCheckoutId: expect.anything(),
-        }));
-        expect(saveNewSessionDraftMock.mock.calls.at(-1)?.[0]).not.toEqual(expect.objectContaining({
-            checkoutCreationDraft: expect.anything(),
         }));
     });
 

@@ -333,6 +333,23 @@ describe('runStandardAcpProvider', () => {
     expect(runtimeOptions).not.toHaveProperty('runtimeActivityContributionHandle');
   });
 
+  it('binds the managed Happier session id into every standard ACP provider environment', async () => {
+    const harness = createHarness();
+    let runtimeOptions: Record<string, unknown> | null = null;
+    harness.config.createRuntime = (options: Record<string, unknown>) => {
+      runtimeOptions = options;
+      return harness.runtime;
+    };
+
+    await runStandardAcpProvider(harness.opts, harness.config, harness.deps);
+
+    expect(runtimeOptions).toMatchObject({
+      processEnv: {
+        HAPPIER_SESSION_ID: 'session-1',
+      },
+    });
+  });
+
   it('does not emit idle keepAlive heartbeats at the thinking cadence', async () => {
     vi.useFakeTimers();
     const harness = createHarness();
@@ -629,6 +646,20 @@ describe('runStandardAcpProvider', () => {
 
     expect(resolvedPrompt).toContain("'--session-id' 'session-1'");
     expect(resolvedPrompt).not.toContain('vendor-session-123');
+  });
+
+  it('does not duplicate a spawn-delivered system prompt on the first message', async () => {
+    const harness = createHarness();
+    harness.config.deliversSystemPromptAtSpawn = true;
+    let firstMessagePrompt = '';
+    harness.deps.runPermissionModePromptLoopFn = async (params: any) => {
+      await params.runtime.startOrLoad({});
+      firstMessagePrompt = await params.resolveFreshSessionSystemPrompt({ baseOverride: 'EXPLICIT BASE' });
+    };
+
+    await runStandardAcpProvider(harness.opts, harness.config, harness.deps);
+
+    expect(firstMessagePrompt).toBe('EXPLICIT BASE');
   });
 
   it('in-flight steer controller calls steerPrompt with correct receiver', async () => {

@@ -802,6 +802,26 @@ describe('persistence', () => {
     });
 
     describe('new session draft', () => {
+        it('roundtrips an explicit current-path checkout selection as null', () => {
+            const draft = {
+                input: '',
+                selectedMachineId: 'machine-a',
+                selectedPath: '/repo',
+                checkoutCreationDraft: null,
+                selectedProfileId: null,
+                selectedSecretId: null,
+                agentType: 'claude' as const,
+                permissionMode: 'default' as const,
+                modelMode: 'default' as const,
+                acpSessionModeId: null,
+                updatedAt: Date.now(),
+            };
+
+            saveNewSessionDraft(draft);
+
+            expect(loadNewSessionDraft()).toHaveProperty('checkoutCreationDraft', null);
+        });
+
         it('rehydrates only a non-empty opaque launch user-attempt id', () => {
             const base = {
                 input: 'prompt',
@@ -1327,7 +1347,7 @@ describe('persistence', () => {
             expect(loadNewSessionDraft(sessionLocalScopeA)).toBeNull();
         });
 
-        it('drops legacy new session launch drafts during scope activation', () => {
+        it('moves a legacy new session launch draft into the active scope for repository migration', () => {
             const legacyDraft = {
                 input: 'legacy launch must not cross accounts',
                 selectedMachineId: 'legacy-machine',
@@ -1348,7 +1368,17 @@ describe('persistence', () => {
             persistenceModule.prepareSessionLocalStateScopeForActivation(sessionLocalScopeB);
 
             expect(loadNewSessionDraft()).toBeNull();
-            expect(loadNewSessionDraft(sessionLocalScopeB)).toBeNull();
+            expect(loadNewSessionDraft(sessionLocalScopeB)).toEqual(expect.objectContaining({
+                input: legacyDraft.input,
+                selectedMachineId: legacyDraft.selectedMachineId,
+                selectedPath: legacyDraft.selectedPath,
+                selectedProfileId: legacyDraft.selectedProfileId,
+                selectedSecretId: legacyDraft.selectedSecretId,
+                agentType: legacyDraft.agentType,
+                permissionMode: legacyDraft.permissionMode,
+                modelMode: legacyDraft.modelMode,
+                acpSessionModeId: legacyDraft.acpSessionModeId,
+            }));
         });
 
         it('migrates legacy workspace review comment drafts during scope activation', () => {

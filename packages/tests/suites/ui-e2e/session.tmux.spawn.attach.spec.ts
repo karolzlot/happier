@@ -134,7 +134,7 @@ async function ensureTmuxSettingsInUi(params: {
 }): Promise<void> {
     const { page, uiBaseUrl, tmuxSessionName, tmuxTmpDir } = params;
 
-    await page.goto(`${uiBaseUrl}/settings/session`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${uiBaseUrl}/settings/session/runtime`, { waitUntil: 'domcontentloaded' });
 
     const enabledItem = page.getByTestId('settings-session-tmux-enabled-item');
     await expect(enabledItem).toHaveCount(1, { timeout: 60_000 });
@@ -212,7 +212,7 @@ test.describe('ui e2e: tmux spawn → attach', () => {
             testDir: suiteDir,
             dbProvider: 'sqlite',
             extraEnv: {
-                HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
+                HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys,providers.claude.unifiedTerminal',
                 HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
                 HAPPIER_PRESENCE_SESSION_TIMEOUT_MS: '60000',
                 HAPPIER_PRESENCE_MACHINE_TIMEOUT_MS: '60000',

@@ -8,6 +8,7 @@ import { startServerLight, type StartedServer } from '../../src/testkit/process/
 import { startUiWeb, type StartedUiWeb } from '../../src/testkit/process/uiWeb';
 import { type StartedDaemon } from '../../src/testkit/daemon/daemon';
 import { createSessionFromNewSessionComposer } from '../../src/testkit/uiE2e/createSessionFromNewSessionComposer';
+import { selectSessionForkStrategy } from '../../src/testkit/uiE2e/selectSessionForkStrategy';
 import { fakeClaudeFixturePath } from '../../src/testkit/fakeClaude';
 import { gotoDomContentLoadedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
 import { ensureAccountReadyForConnect } from '../../src/testkit/uiE2e/ensureAccountReadyForConnect';
@@ -86,7 +87,7 @@ test.describe('ui e2e: session fork from header action menu', () => {
       testDir: suiteDir,
       dbProvider: 'sqlite',
       extraEnv: {
-        HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys',
+        HAPPIER_BUILD_FEATURES_DENY: 'sharing.contentKeys,providers.claude.unifiedTerminal',
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
       },
     });
@@ -182,6 +183,7 @@ test.describe('ui e2e: session fork from header action menu', () => {
     await page.getByLabel('Open session actions').click();
     await expect(page.getByRole('button', { name: /Fork session/i })).toHaveCount(1, { timeout: 60_000 });
     await page.getByRole('button', { name: /Fork session/i }).click();
+    await selectSessionForkStrategy(page, 'replay');
 
     // Expect to navigate to a different /session/<id>
     const start = Date.now();

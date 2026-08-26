@@ -8,6 +8,7 @@ import {
 import {
   createApiSessionSocketStub as createApiSessionSocketStubBase,
   flushApiSessionClientMessageCommitQueue,
+  resolveApiSessionSocketDefaultAck,
   type ApiSessionSocketStub,
 } from '@/testkit/backends/apiSessionSocketHarness';
 import { waitForCondition } from '@/testkit/async/waitFor';
@@ -24,9 +25,11 @@ function createApiSessionSocketStub(
   return createApiSessionSocketStubBase({
     ...options,
     emitWithAck: async (event, payload, socket) => {
-      if (event === 'ping') return { v: 1 };
       if (options.emitWithAck) return await options.emitWithAck(event, payload, socket);
-      return options.emitWithAckResult ?? { ok: true, id: 'm1', seq: 1, localId: 'l1' };
+      if (event === 'ping' || event === 'session-runtime-activity-snapshot') {
+        return resolveApiSessionSocketDefaultAck(event, payload);
+      }
+      return options.emitWithAckResult ?? resolveApiSessionSocketDefaultAck(event, payload);
     },
   });
 }
@@ -149,23 +152,23 @@ function createProviderInputOutcomeProducer(
 }
 
 async function waitForCurrentPendingInputContract(client: ApiSessionClient): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if ((client as any).sessionSyncPendingInputServerContract?.pendingInput === 'v1') return;
-    await Promise.resolve();
-  }
-  throw new Error('Timed out waiting for current Pending-input server contract');
+  await client.getRuntimeActivitySnapshotPublisher().publish({ state: 'idle', activeCount: 0 });
+  await waitForCondition(
+    () => (client as any).sessionSyncPendingInputServerContract?.pendingInput === 'v1',
+    { timeoutMs: 5_000, intervalMs: 10, label: 'current Pending-input server contract' },
+  );
 }
 
 async function waitForReleasedServerPendingInputContract(client: ApiSessionClient): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if ((client as any).sessionSyncPendingInputServerContract?.pendingInput === 'released_server_v0_2_1') return;
-    await Promise.resolve();
-  }
-  throw new Error('Timed out waiting for released-server Pending-input server contract');
+  await waitForCondition(
+    () => (client as any).sessionSyncPendingInputServerContract?.pendingInput === 'released_server_v0_2_1',
+    { timeoutMs: 5_000, intervalMs: 10, label: 'released-server Pending-input server contract' },
+  );
 }
 
 describe('ApiSessionClient session.userMessage.send delivery', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       features: {
         sharing: {
@@ -580,30 +583,6 @@ describe('ApiSessionClient session.userMessage.send delivery', () => {
 
     const received: any[] = [];
     client.onUserMessage((msg) => received.push(msg));
-    materializeNextPendingQueueV2MessageMock.mockResolvedValueOnce({
-      didMaterialize: true,
-      localId: 'l1',
-      didWrite: true,
-      pendingQueueState: { known: true, pendingCount: 0, pendingBlockedCount: 0, pendingVersion: 2 },
-      message: {
-        id: 'm1',
-        seq: 1,
-        localId: 'l1',
-        messageRole: 'user',
-        content: {
-          t: 'plain',
-          v: {
-            role: 'user',
-            content: { type: 'text', text: 'hello' },
-            localId: 'l1',
-            meta: { source: 'ui', sentFrom: 'ios' },
-          },
-        },
-        createdAt: 1_000,
-        updatedAt: 1_000,
-      },
-    });
-
     // Simulate the daemon/UI invoking the session-scoped RPC handler, which calls the internal enqueue.
     await (client as any).enqueueSessionUserMessage({
       text: 'hello',
@@ -655,6 +634,7 @@ describe('ApiSessionClient session.userMessage.send delivery', () => {
     });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    await waitForCurrentPendingInputContract(client);
     const checkUsageLimitRecoveryNow = vi.fn(async () => ({ ok: true, status: 'ready' }));
     (client as any).sessionRuntimeControls.checkUsageLimitRecoveryNow = checkUsageLimitRecoveryNow;
     const received: any[] = [];
@@ -1894,6 +1874,7 @@ describe('ApiSessionClient session.userMessage.send delivery', () => {
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    await waitForCurrentPendingInputContract(client);
 
     const received: any[] = [];
     client.onUserMessage((msg) => received.push(msg));

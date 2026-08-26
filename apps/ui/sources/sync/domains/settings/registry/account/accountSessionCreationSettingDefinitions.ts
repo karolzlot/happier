@@ -12,8 +12,10 @@ import {
     type SessionTranscriptStorageMode,
 } from '@/sync/domains/session/transcriptStorageDefaults';
 import { RememberedEngineSelectionsByScopeV1Schema } from '@/sync/domains/sessionAuthoring/rememberedEngineSelections';
+import { NEW_SESSION_CHECKOUT_MODES } from '@/sync/domains/state/newSessionCheckoutDraft';
 
 const SessionTranscriptStorageModeSchema = z.enum(SESSION_TRANSCRIPT_STORAGE_MODES);
+const NewSessionDefaultCheckoutModeV1Schema = z.enum(NEW_SESSION_CHECKOUT_MODES);
 
 export const NEW_SESSION_WIZARD_SELECTION_SECTION_IDS = [
     'profiles',
@@ -30,8 +32,11 @@ export const NEW_SESSION_WIZARD_SECTION_PRESENTATIONS = [
     'dropdown',
 ] as const;
 
+export const NEW_SESSION_DRAFT_ENTRY_MODES = ['resumePrevious', 'alwaysFresh'] as const;
+
 export type NewSessionWizardSelectionSectionId = typeof NEW_SESSION_WIZARD_SELECTION_SECTION_IDS[number];
 export type NewSessionWizardSectionPresentation = typeof NEW_SESSION_WIZARD_SECTION_PRESENTATIONS[number];
+export type NewSessionDraftEntryMode = typeof NEW_SESSION_DRAFT_ENTRY_MODES[number];
 
 const NewSessionWizardSelectionSectionIdSchema = z.enum(NEW_SESSION_WIZARD_SELECTION_SECTION_IDS);
 const NewSessionWizardSectionPresentationSchema = z.enum(NEW_SESSION_WIZARD_SECTION_PRESENTATIONS);
@@ -104,6 +109,19 @@ const SessionTranscriptStorageModeByTargetKeySchema = z.preprocess((value) => {
 }, z.record(BackendTargetKeySchema, SessionTranscriptStorageModeSchema).default({}));
 
 export const ACCOUNT_SESSION_CREATION_SETTING_DEFINITIONS = defineSettingDefinitions({
+    newSessionDraftEntryMode: {
+        schema: z.enum(NEW_SESSION_DRAFT_ENTRY_MODES),
+        default: 'resumePrevious',
+        description: 'Whether ordinary New session entry resumes its device-local draft or always starts fresh',
+        storageScope: 'account',
+        analytics: {
+            trackCurrentState: true,
+            trackChanges: true,
+            valueKind: 'enum',
+            privacy: 'safe',
+            identityScope: 'person',
+        },
+    },
     lastUsedAgent: {
         schema: z.string().nullable(),
         default: null,
@@ -204,6 +222,19 @@ export const ACCOUNT_SESSION_CREATION_SETTING_DEFINITIONS = defineSettingDefinit
         default: false,
         description: 'Arrange new-session wizard selectors in columns on wide screens',
         storageScope: 'account',
+    },
+    newSessionDefaultCheckoutModeV1: {
+        schema: NewSessionDefaultCheckoutModeV1Schema,
+        default: 'current_path',
+        description: 'Default checkout mode for new sessions in Git repositories',
+        storageScope: 'account',
+        analytics: {
+            trackCurrentState: true,
+            trackChanges: true,
+            valueKind: 'enum',
+            privacy: 'safe',
+            identityScope: 'person',
+        },
     },
 });
 

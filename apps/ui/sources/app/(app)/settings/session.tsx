@@ -28,6 +28,7 @@ import {
     resolveEffectiveSessionListFolderSortMode,
     type SessionListOrderingModeV1,
 } from '@/sync/domains/session/listing/sessionListOrderingRules';
+import { getCodingPromptTitleUpdatesModeItems } from '@/components/settings/session/codingPromptBehaviorOptions';
 
 export default React.memo(function SessionSettingsScreen() {
     const { theme } = useUnistyles();
@@ -38,6 +39,7 @@ export default React.memo(function SessionSettingsScreen() {
     const [rememberLastProjectSessionSelections, setRememberLastProjectSessionSelections] = useSettingMutable('rememberLastProjectSessionSelections');
     const [rememberLastEngineSelections, setRememberLastEngineSelections] = useSettingMutable('rememberLastEngineSelectionsV1');
     const [useEnhancedSessionWizard, setUseEnhancedSessionWizard] = useSettingMutable('useEnhancedSessionWizard');
+    const [defaultCheckoutMode, setDefaultCheckoutMode] = useSettingMutable('newSessionDefaultCheckoutModeV1');
 
     const [sessionTagsEnabled, setSessionTagsEnabled] = useSettingMutable('sessionTagsEnabled');
     const [sessionListWorkingStatusAnimatedTextEnabled, setSessionListWorkingStatusAnimatedTextEnabled] = useSettingMutable('sessionListWorkingStatusAnimatedTextEnabled');
@@ -94,23 +96,7 @@ export default React.memo(function SessionSettingsScreen() {
             ...(raw.responseOptions === 'disabled' ? { responseOptions: 'disabled' as const } : {}),
         };
     }, [codingPromptBehavior]);
-    const titleUpdatesModeItems = React.useMemo(() => [
-        {
-            id: 'disabled',
-            title: t('settingsSession.promptPersonalization.askAgentToRenameSessionsNeverTitle'),
-            subtitle: t('settingsSession.promptPersonalization.askAgentToRenameSessionsNeverSubtitle'),
-        },
-        {
-            id: 'initial',
-            title: t('settingsSession.promptPersonalization.askAgentToRenameSessionsInitialTitle'),
-            subtitle: t('settingsSession.promptPersonalization.askAgentToRenameSessionsInitialSubtitle'),
-        },
-        {
-            id: 'ongoing',
-            title: t('settingsSession.promptPersonalization.askAgentToRenameSessionsOngoingTitle'),
-            subtitle: t('settingsSession.promptPersonalization.askAgentToRenameSessionsOngoingSubtitle'),
-        },
-    ], []);
+    const titleUpdatesModeItems = React.useMemo(getCodingPromptTitleUpdatesModeItems, []);
     const setSessionTitleUpdatesMode = React.useCallback(
         (mode: CodingPromptSessionTitleUpdatesModeV1) => {
             setCodingPromptBehavior({
@@ -470,6 +456,24 @@ export default React.memo(function SessionSettingsScreen() {
                         onPress={() => router.push('/settings/session/new-session-wizard')}
                     />
                 ) : null}
+                <Item
+                    testID="settings-new-session-default-worktree"
+                    title={t('settingsSession.sessionCreation.defaultWorktreeTitle')}
+                    subtitle={t(
+                        defaultCheckoutMode === 'git_worktree'
+                            ? 'settingsSession.sessionCreation.defaultWorktreeEnabledSubtitle'
+                            : 'settingsSession.sessionCreation.defaultWorktreeDisabledSubtitle',
+                    )}
+                    icon={<Icon name="stack-simple" size={29} color={theme.colors.text.secondary} />}
+                    rightElement={(
+                        <Switch
+                            value={defaultCheckoutMode === 'git_worktree'}
+                            onValueChange={(enabled) => setDefaultCheckoutMode(enabled ? 'git_worktree' : 'current_path')}
+                        />
+                    )}
+                    showChevron={false}
+                    onPress={() => setDefaultCheckoutMode(defaultCheckoutMode === 'git_worktree' ? 'current_path' : 'git_worktree')}
+                />
                 <Item
                     title={t('settingsSession.sessionCreation.rememberLastProjectSelectionsTitle')}
                     subtitle={t(

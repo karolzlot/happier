@@ -15,7 +15,7 @@ import { isModelMode, isPermissionMode, type PermissionMode, type ModelMode } fr
 import { DEFAULT_AGENT_ID, isAgentId, type AgentId } from '@/agents/registry/registryCore';
 import { SecretStringSchema, type SecretString } from '../../encryption/secretSettings';
 import {
-    readPersistedNewSessionCheckoutDraft,
+    resolveNewSessionCheckoutSelection,
     type NewSessionCheckoutCreationDraft,
 } from './newSessionCheckoutDraft';
 import {
@@ -187,7 +187,7 @@ export interface NewSessionDraft {
     agentType: NewSessionAgentType;
     backendTarget?: BackendTargetRefV1 | null;
     transcriptStorage?: 'persisted' | 'direct';
-    permissionMode: PermissionMode;
+    permissionMode?: PermissionMode;
     modelMode: ModelMode;
     /**
      * ACP-only session mode selection (e.g. "plan") for the new-session wizard.
@@ -769,7 +769,7 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
         const selectedMachineId = typeof parsed.selectedMachineId === 'string' ? parsed.selectedMachineId : null;
         const selectedPath = typeof parsed.selectedPath === 'string' ? parsed.selectedPath : null;
         const entryIntent = parseDraftEntryIntent((parsed as any).entryIntent);
-        const checkoutDraft = readPersistedNewSessionCheckoutDraft(parsed);
+        const checkoutSelection = resolveNewSessionCheckoutSelection(parsed);
         const selectedProfileId = typeof parsed.selectedProfileId === 'string' ? parsed.selectedProfileId : null;
         const selectedSecretId = typeof parsed.selectedSecretId === 'string' ? parsed.selectedSecretId : null;
         const selectedSecretIdByProfileIdByEnvVarName = parseDraftNestedRecord(
@@ -835,7 +835,9 @@ export function loadNewSessionDraft(scope?: ServerAccountScope | null): NewSessi
             selectedMachineId,
             selectedPath,
             ...(entryIntent ? { entryIntent } : {}),
-            ...(checkoutDraft.checkoutCreationDraft ? { checkoutCreationDraft: checkoutDraft.checkoutCreationDraft } : {}),
+            ...(checkoutSelection.explicitMode !== null
+                ? { checkoutCreationDraft: checkoutSelection.checkoutCreationDraft }
+                : {}),
             selectedProfileId,
             selectedSecretId,
             selectedSecretIdByProfileIdByEnvVarName,
@@ -1188,6 +1190,11 @@ function absorbLegacySessionLocalStateScope(scope: ServerAccountScope, legacySco
         saveSessionDrafts(sessionDrafts, scope);
     }
 
+    if (!loadNewSessionDraft(scope)) {
+        const legacyNewSessionDraft = loadNewSessionDraft(legacyScope);
+        if (legacyNewSessionDraft) saveNewSessionDraft(legacyNewSessionDraft, scope);
+    }
+
     const sessionReviewDrafts = mergeRecordsPreferCanonical(
         loadSessionReviewCommentsDrafts(scope),
         loadSessionReviewCommentsDrafts(legacyScope),
@@ -1226,13 +1233,17 @@ export function prepareSessionLocalStateScopeForActivation(
         }
     };
 
-    // Active-session drafts are recoverable user text, so legacy values migrate once.
-    // Launch drafts include machine/profile/secret intent and are dropped below instead.
+    // Drafts are recoverable user intent, so legacy values move into the active scope once.
+    // The canonical draft repository projects safe synchronized fields before retiring them.
     if (typeof mmkv.getString(sessionDraftsKey(scope)) !== 'string') {
         const legacyDrafts = loadSessionDrafts();
         if (Object.keys(legacyDrafts).length > 0) {
             saveSessionDrafts(legacyDrafts, scope);
         }
+    }
+    if (typeof mmkv.getString(newSessionDraftKey(scope)) !== 'string') {
+        const legacyNewSessionDraft = loadNewSessionDraft();
+        if (legacyNewSessionDraft) saveNewSessionDraft(legacyNewSessionDraft, scope);
     }
 
     if (typeof mmkv.getString(sessionReviewCommentsDraftsKey(scope)) !== 'string') {

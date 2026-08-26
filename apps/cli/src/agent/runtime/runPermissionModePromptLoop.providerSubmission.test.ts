@@ -21,6 +21,90 @@ function createModeQueue() {
 }
 
 describe('runPermissionModePromptLoop provider submission phase ownership', () => {
+  it('delivers advertised provider commands unchanged and applies deferred fresh-session prompt composition to the next prompt', async () => {
+    const queue = createModeQueue();
+    queue.push(
+      { text: '/goal fix authentication', localId: 'local-command' },
+      { permissionMode: 'default', appendSystemPrompt: 'APPEND' },
+      { userMessageLocalId: 'local-command' },
+    );
+
+    const metadata: Record<string, unknown> = {
+      permissionMode: 'default',
+      permissionModeUpdatedAt: 0,
+    };
+    let shouldExit = false;
+    const resolveFreshSessionSystemPrompt = vi.fn(async ({ baseOverride }: { baseOverride?: string | null }) => (
+      baseOverride === undefined ? 'HAPPIER SYSTEM PROMPT' : baseOverride ?? ''
+    ));
+    const sendPromptWithMeta = vi.fn(async (prompt: { onProviderPromptAccepted?: () => void }) => {
+      prompt.onProviderPromptAccepted?.();
+      if (sendPromptWithMeta.mock.calls.length === 1) {
+        queue.push(
+          { text: 'continue normally', localId: 'local-message' },
+          { permissionMode: 'default', appendSystemPrompt: 'APPEND' },
+          { userMessageLocalId: 'local-message' },
+        );
+      } else {
+        shouldExit = true;
+      }
+    });
+
+    await runPermissionModePromptLoop({
+      providerName: 'Pi',
+      providerId: 'pi',
+      agentMessageType: 'pi',
+      explicitPermissionMode: 'default',
+      session: {
+        getMetadataSnapshot: () => metadata,
+        updateMetadata: vi.fn(),
+        ensureMetadataSnapshot: async () => metadata,
+        waitForMetadataUpdate: () => new Promise<boolean>(() => {}),
+        waitForPendingEligibilityUpdate: () => new Promise<void>(() => {}),
+        fetchLatestUserPermissionIntentFromTranscript: async () => null,
+        sendAgentMessage: vi.fn(),
+      } as any,
+      messageQueue: queue,
+      permissionHandler: {
+        setPermissionMode: vi.fn(),
+        reset: vi.fn(),
+      } as any,
+      runtime: {
+        beginTurn: vi.fn(),
+        startOrLoad: vi.fn(async () => undefined),
+        isProviderNativeCommand: vi.fn(async (text: string) => text.startsWith('/goal')),
+        sendPrompt: vi.fn(async () => undefined),
+        sendPromptWithMeta,
+        flushTurn: vi.fn(async () => undefined),
+        reset: vi.fn(async () => undefined),
+        getSessionId: vi.fn(() => 'pi-session'),
+      },
+      createOverrideSynchronizer: () => ({
+        syncFromMetadata: () => {},
+        flushPendingAfterStart: async () => {},
+      }),
+      messageBuffer: new MessageBuffer(),
+      shouldExit: () => shouldExit,
+      getAbortSignal: () => new AbortController().signal,
+      keepAlive: () => {},
+      setThinking: () => {},
+      sendReady: () => {},
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {},
+      setCurrentPermissionModeUpdatedAt: () => {},
+      resolveFreshSessionSystemPrompt,
+      formatPromptErrorMessage: (error) => String(error),
+    });
+
+    expect(sendPromptWithMeta).toHaveBeenCalledWith(expect.objectContaining({
+      text: '/goal fix authentication',
+    }));
+    expect(sendPromptWithMeta).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      text: 'APPEND\n\ncontinue normally',
+    }));
+    expect(resolveFreshSessionSystemPrompt).toHaveBeenCalledTimes(1);
+  });
+
   it('attributes acceptance to the model captured before provider dispatch', async () => {
     const queue = createModeQueue();
     queue.push(

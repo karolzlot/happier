@@ -5737,6 +5737,12 @@ deps: {
         newTagConfirm: 'Afegeix',
     },
 
+    sessionDrafts: {
+        sectionTitle: 'Esborranys', badge: 'Esborrany', untitled: 'Esborrany sense títol', continueEditing: 'Continua editant', startAnother: 'Comença’n un altre',
+        status: { offline: 'Sense connexió', syncing: 'Sincronitzant', conflict: 'Conflicte', machineUnavailable: 'Màquina no disponible', attachmentNeedsAttention: 'Cal revisar l’adjunt', startInterrupted: 'Inici interromput' },
+        new: { action: 'Esborrany nou' }, delete: { action: 'Suprimeix l’esborrany', confirmTitle: 'Vols suprimir l’esborrany?', confirmDescription: 'Aquest esborrany se suprimirà dels teus dispositius.' },
+        conflict: { title: 'Conflicte d’esborrany', description: 'Aquest camp ha canviat en un altre dispositiu.', mine: 'En aquest dispositiu', synced: 'Sincronitzat', useSynced: 'Utilitza el sincronitzat', keepDevice: 'Conserva el del dispositiu', copyMine: 'Copia el meu', copied: 'Copiat', copyFailed: 'No s’ha pogut copiar', field: { text: 'Contingut de text', mentions: 'Mencions', attachments: 'Adjunts', recipient: 'Destinatari', agentContinuation: 'Continuació de l’agent', executionRunDelivery: 'Lliurament de l’execució' } },
+    },
     sessionsList: {
         serverHeader: ({ server }: { server: string }) => `Servidor: ${server}`,
         storagePersistedTab: 'Happier',
@@ -7327,6 +7333,14 @@ deps: {
     },
 
 settingsSession: {
+    newSessionDraftEntry: {
+        title: 'Esborranys de sessió nova',
+        footer: 'Tria si Sessió nova continua l’esborrany d’aquest dispositiu o n’obre un de nou.',
+        resumeTitle: 'Reprèn l’esborrany anterior',
+        resumeSubtitle: 'Continua l’esborrany iniciat des de Sessió nova en aquest dispositiu.',
+        freshTitle: 'Comença sempre de zero',
+        freshSubtitle: 'Obre un esborrany nou cada vegada que triïs Sessió nova.',
+    },
 	            sessionList: {
 	                title: 'Llista de sessions',
 	                footer: 'Personalitza què apareix a cada fila de sessió.',
@@ -7903,6 +7917,9 @@ settingsSession: {
               wizardColumnsTitle: 'Disseny en dues columnes',
               wizardColumnsEnabledSubtitle: 'Col·loca selectors relacionats de costat en pantalles amples.',
               wizardColumnsDisabledSubtitle: 'Apila tots els selectors de l’assistent en una columna.',
+              defaultWorktreeTitle: 'Crea un arbre de treball per a les sessions noves',
+              defaultWorktreeEnabledSubtitle: 'Inicia cada sessió Git nova en un arbre de treball nou.',
+              defaultWorktreeDisabledSubtitle: 'Inicia les sessions Git noves a la carpeta seleccionada.',
               wizardPresentationTitle: 'Disseny dels selectors de l’assistent',
               wizardPresentationFooter: 'Auto manté les seccions curtes com a llistes i canvia les llargues a desplegables amb cerca.',
               wizardPresentationAutoTitle: 'Auto',

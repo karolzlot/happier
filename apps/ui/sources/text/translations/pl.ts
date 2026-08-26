@@ -6114,6 +6114,12 @@ export const pl: TranslationStructure = {
     newTagConfirm: "Dodaj",
   },
 
+  sessionDrafts: {
+    sectionTitle: 'Wersje robocze', badge: 'Wersja robocza', untitled: 'Wersja bez tytułu', continueEditing: 'Kontynuuj edycję', startAnother: 'Rozpocznij nową',
+    status: { offline: 'Poza siecią', syncing: 'Synchronizowanie', conflict: 'Konflikt', machineUnavailable: 'Maszyna niedostępna', attachmentNeedsAttention: 'Załącznik wymaga uwagi', startInterrupted: 'Uruchamianie przerwane' },
+    new: { action: 'Nowa wersja robocza' }, delete: { action: 'Usuń wersję roboczą', confirmTitle: 'Usunąć wersję roboczą?', confirmDescription: 'Ta wersja robocza zostanie usunięta z Twoich urządzeń.' },
+    conflict: { title: 'Konflikt wersji roboczej', description: 'To pole zmieniono na innym urządzeniu.', mine: 'Na tym urządzeniu', synced: 'Zsynchronizowane', useSynced: 'Użyj zsynchronizowanej', keepDevice: 'Zachowaj z urządzenia', copyMine: 'Kopiuj moją', copied: 'Skopiowano', copyFailed: 'Nie udało się skopiować', field: { text: 'Tekst', mentions: 'Wzmianki', attachments: 'Załączniki', recipient: 'Odbiorca', agentContinuation: 'Kontynuacja agenta', executionRunDelivery: 'Dostarczenie wykonania' } },
+  },
   sessionsList: {
     serverHeader: ({ server }: { server: string }) => `Serwer: ${server}`,
     storagePersistedTab: "Happier",
@@ -7774,6 +7780,14 @@ export const pl: TranslationStructure = {
     },
 
 settingsSession: {
+    newSessionDraftEntry: {
+        title: 'Wersje robocze nowej sesji',
+        footer: 'Wybierz, czy Nowa sesja ma kontynuować wersję roboczą z tego urządzenia, czy otworzyć nową.',
+        resumeTitle: 'Wznów poprzednią wersję roboczą',
+        resumeSubtitle: 'Kontynuuj wersję roboczą rozpoczętą przez Nową sesję na tym urządzeniu.',
+        freshTitle: 'Zawsze zaczynaj od nowa',
+        freshSubtitle: 'Otwieraj nową wersję roboczą za każdym wybraniem Nowej sesji.',
+    },
 	      sessionList: {
 	          title: 'Lista sesji',
 	          footer: 'Dostosuj, co jest widoczne w wierszu sesji.',
@@ -8371,6 +8385,9 @@ settingsSession: {
         wizardColumnsTitle: "Układ dwukolumnowy",
         wizardColumnsEnabledSubtitle: "Umieszcza powiązane selektory obok siebie na szerokich ekranach.",
         wizardColumnsDisabledSubtitle: "Układa wszystkie selektory kreatora w jednej kolumnie.",
+        defaultWorktreeTitle: "Twórz worktree dla nowych sesji",
+        defaultWorktreeEnabledSubtitle: "Rozpoczynaj każdą nową sesję Git w nowym worktree.",
+        defaultWorktreeDisabledSubtitle: "Rozpoczynaj nowe sesje Git w wybranym folderze.",
         wizardPresentationTitle: "Układ selektorów kreatora",
         wizardPresentationFooter:
           "Auto zostawia krótkie sekcje jako listy i przełącza długie sekcje na przeszukiwalne menu rozwijane.",
