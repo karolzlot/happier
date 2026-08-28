@@ -239,6 +239,8 @@ describe('Codex OpenRouter machine configuration', () => {
       '-c',
       'model_reasoning_effort="high"',
       '-c',
+      'preferred_auth_method="apikey"',
+      '-c',
       'model_provider="openrouter"',
       '-c',
       `model_catalog_json=${JSON.stringify(join(codexHome, 'openrouter-models.json'))}`,

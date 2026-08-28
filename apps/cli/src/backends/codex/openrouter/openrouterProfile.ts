@@ -59,6 +59,7 @@ function applyOpenRouterAppServerOverrides(
     ...(defaults?.reasoningEffort
       ? tomlStringOverride('model_reasoning_effort', defaults.reasoningEffort)
       : []),
+    ...tomlStringOverride('preferred_auth_method', 'apikey'),
     ...tomlStringOverride('model_provider', CODEX_OPENROUTER_PROVIDER_ID),
     ...tomlStringOverride('model_catalog_json', managedCatalogPath(processEnv)),
     ...tomlStringOverride(
