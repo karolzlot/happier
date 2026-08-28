@@ -6,11 +6,17 @@ import { URL } from 'node:url';
 
 import { resolveCodexCliInvocation } from '../utils/resolveCodexCliInvocation';
 import { resolveConfiguredCodexHome } from '../utils/resolveConfiguredCodexHome';
-import { CODEX_OPENROUTER_PROFILE_NAME } from './openrouterProfile';
+import {
+  CODEX_OPENROUTER_API_KEY_ENV_VAR,
+  CODEX_OPENROUTER_BASE_URL,
+  CODEX_OPENROUTER_CATALOG_FILE_NAME,
+  CODEX_OPENROUTER_PROFILE_NAME,
+  CODEX_OPENROUTER_PROVIDER_ID,
+  CODEX_OPENROUTER_PROVIDER_NAME,
+  CODEX_OPENROUTER_WIRE_API,
+} from './openrouterProfile';
 
-const OPENROUTER_API_KEY_ENV_VAR = 'OPENROUTER_API_KEY';
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
-const MANAGED_CATALOG_FILE_NAME = 'openrouter-models.json';
 
 export type CodexOpenRouterMachineConfigurationState =
   | 'ready'
@@ -120,7 +126,7 @@ function managedProfilePath(processEnv: NodeJS.ProcessEnv): string {
 }
 
 function managedCatalogPath(processEnv: NodeJS.ProcessEnv): string {
-  return join(resolveConfiguredCodexHome(processEnv), MANAGED_CATALOG_FILE_NAME);
+  return join(resolveConfiguredCodexHome(processEnv), CODEX_OPENROUTER_CATALOG_FILE_NAME);
 }
 
 function parseTomlStringLiteral(raw: string): string | null {
@@ -233,7 +239,7 @@ export async function inspectCodexOpenRouterMachineConfiguration(params: Readonl
     );
   }
 
-  if (readTomlString(profileText, 'model_provider') !== 'openrouter') {
+  if (readTomlString(profileText, 'model_provider') !== CODEX_OPENROUTER_PROVIDER_ID) {
     return result(
       'invalid',
       'openrouter-provider-not-selected',
@@ -249,12 +255,12 @@ export async function inspectCodexOpenRouterMachineConfiguration(params: Readonl
     );
   }
   if (
-    readTomlString(profileText, 'name', 'model_providers.openrouter') !== 'OpenRouter' ||
+    readTomlString(profileText, 'name', 'model_providers.openrouter') !== CODEX_OPENROUTER_PROVIDER_NAME ||
     readTomlString(profileText, 'base_url', 'model_providers.openrouter') !==
-      'https://openrouter.ai/api/v1' ||
+      CODEX_OPENROUTER_BASE_URL ||
     readTomlString(profileText, 'env_key', 'model_providers.openrouter') !==
-      OPENROUTER_API_KEY_ENV_VAR ||
-    readTomlString(profileText, 'wire_api', 'model_providers.openrouter') !== 'responses'
+      CODEX_OPENROUTER_API_KEY_ENV_VAR ||
+    readTomlString(profileText, 'wire_api', 'model_providers.openrouter') !== CODEX_OPENROUTER_WIRE_API
   ) {
     return result(
       'invalid',
@@ -501,18 +507,18 @@ function renderManagedOpenRouterProfile(
 
   const managedRoot = [
     `model = ${JSON.stringify(defaultModel.slug)}`,
-    'model_provider = "openrouter"',
+    `model_provider = ${JSON.stringify(CODEX_OPENROUTER_PROVIDER_ID)}`,
     ...(defaultEffort === null || defaultEffort === undefined
       ? []
       : [`model_reasoning_effort = ${JSON.stringify(defaultEffort)}`]),
     `model_catalog_json = ${JSON.stringify(catalogPath)}`,
   ].join('\n');
   const managedProvider = [
-    '[model_providers.openrouter]',
-    'name = "OpenRouter"',
-    'base_url = "https://openrouter.ai/api/v1"',
-    `env_key = "${OPENROUTER_API_KEY_ENV_VAR}"`,
-    'wire_api = "responses"',
+    `[model_providers.${CODEX_OPENROUTER_PROVIDER_ID}]`,
+    `name = ${JSON.stringify(CODEX_OPENROUTER_PROVIDER_NAME)}`,
+    `base_url = ${JSON.stringify(CODEX_OPENROUTER_BASE_URL)}`,
+    `env_key = ${JSON.stringify(CODEX_OPENROUTER_API_KEY_ENV_VAR)}`,
+    `wire_api = ${JSON.stringify(CODEX_OPENROUTER_WIRE_API)}`,
   ].join('\n');
   const output = [managedRoot, kept.join('\n'), managedProvider]
     .filter((section) => section.trim().length > 0)
@@ -528,7 +534,7 @@ function renderManagedOpenRouterProfile(
 
 async function runCodexVersion(processEnv: NodeJS.ProcessEnv): Promise<string> {
   const versionProcessEnv = { ...processEnv };
-  delete versionProcessEnv[OPENROUTER_API_KEY_ENV_VAR];
+  delete versionProcessEnv[CODEX_OPENROUTER_API_KEY_ENV_VAR];
   let invocation: Readonly<{ command: string; args: string[] }>;
   try {
     invocation = await resolveCodexCliInvocation({
@@ -651,7 +657,7 @@ async function replaceManagedCatalog(
   await mkdir(codexHome, { recursive: true, mode: 0o700 });
   const stagedCatalogPath = join(
     codexHome,
-    `.${MANAGED_CATALOG_FILE_NAME}.${randomUUID()}`,
+    `.${CODEX_OPENROUTER_CATALOG_FILE_NAME}.${randomUUID()}`,
   );
   try {
     await writeFile(stagedCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`, {
@@ -727,7 +733,7 @@ export async function configureCodexOpenRouterMachine(
 
     await mkdir(codexHome, { recursive: true, mode: 0o700 });
     const suffix = randomUUID();
-    const stagedCatalogPath = join(codexHome, `.${MANAGED_CATALOG_FILE_NAME}.${suffix}`);
+    const stagedCatalogPath = join(codexHome, `.${CODEX_OPENROUTER_CATALOG_FILE_NAME}.${suffix}`);
     const stagedProfilePath = join(
       codexHome,
       `.${CODEX_OPENROUTER_PROFILE_NAME}.config.toml.${suffix}`,

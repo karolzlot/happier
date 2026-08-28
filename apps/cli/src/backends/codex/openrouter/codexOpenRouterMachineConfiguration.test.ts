@@ -14,7 +14,7 @@ import {
   CODEX_OPENROUTER_PROFILE_NAME,
   HAPPIER_CODEX_OPENROUTER_PROFILE_ENV_KEY,
   markCodexOpenRouterProfileRequested,
-  prependCodexOpenRouterProfileArgs,
+  applyCodexOpenRouterProfileArgs,
 } from './openrouterProfile';
 
 const createdDirectories: string[] = [];
@@ -212,15 +212,44 @@ describe('Codex OpenRouter machine configuration', () => {
     ).toThrow(/free\/missing/);
   });
 
-  it('injects the dedicated Codex profile only when the OpenRouter marker is set', () => {
-    const env: NodeJS.ProcessEnv = {};
-    expect(prependCodexOpenRouterProfileArgs(['app-server'], env)).toEqual(['app-server']);
+  it('applies the dedicated Codex profile with app-server-compatible config overrides', async () => {
+    const codexHome = await createCodexHome();
+    await writeFile(
+      join(codexHome, 'openrouter-models.json'),
+      JSON.stringify({ models: [codexModel('free/model', 'high')] }),
+      'utf8',
+    );
+    const env: NodeJS.ProcessEnv = { CODEX_HOME: codexHome };
+    expect(applyCodexOpenRouterProfileArgs(['app-server'], env)).toEqual(['app-server']);
     markCodexOpenRouterProfileRequested(env);
     expect(env[HAPPIER_CODEX_OPENROUTER_PROFILE_ENV_KEY]).toBe('1');
-    expect(prependCodexOpenRouterProfileArgs(['app-server'], env)).toEqual([
+    expect(applyCodexOpenRouterProfileArgs(['exec'], env)).toEqual([
       '--profile',
       CODEX_OPENROUTER_PROFILE_NAME,
+      'exec',
+    ]);
+    expect(
+      applyCodexOpenRouterProfileArgs(['app-server', '--listen', 'stdio://'], env),
+    ).toEqual([
       'app-server',
+      '--listen',
+      'stdio://',
+      '-c',
+      'model="free/model"',
+      '-c',
+      'model_reasoning_effort="high"',
+      '-c',
+      'model_provider="openrouter"',
+      '-c',
+      `model_catalog_json=${JSON.stringify(join(codexHome, 'openrouter-models.json'))}`,
+      '-c',
+      'model_providers.openrouter.name="OpenRouter"',
+      '-c',
+      'model_providers.openrouter.base_url="https://openrouter.ai/api/v1"',
+      '-c',
+      'model_providers.openrouter.env_key="OPENROUTER_API_KEY"',
+      '-c',
+      'model_providers.openrouter.wire_api="responses"',
     ]);
   });
 });

@@ -7,7 +7,7 @@ import { resolveWindowsCommandPath } from '@happier-dev/cli-common/process';
 import { requireJavaScriptRuntimeExecutable } from '@/runtime/js/requireJavaScriptRuntimeExecutable';
 import { requireProviderCliCommand } from '@/runtime/managedTools/requireProviderCliCommand';
 import { isBun } from '@/utils/runtime';
-import { prependCodexOpenRouterProfileArgs } from '../openrouter/openrouterProfile';
+import { applyCodexOpenRouterProfileArgs } from '../openrouter/openrouterProfile';
 
 const JAVA_SCRIPT_ENTRYPOINT_EXTENSION = /\.(?:c?js|mjs)$/i;
 const JAVA_SCRIPT_SHEBANG = /^#!.*\b(?:env\s+)?(?:node|bun)(?:\s|$)/;
@@ -93,7 +93,7 @@ export async function resolveCodexCliInvocation(params: Readonly<{
 }>): Promise<Readonly<{ command: string; args: string[] }>> {
     const processEnv = params.processEnv ?? process.env;
     const cwd = params.cwd ?? process.cwd();
-    const args = prependCodexOpenRouterProfileArgs(params.args, processEnv);
+    const args = applyCodexOpenRouterProfileArgs(params.args, processEnv);
     const command =
         resolveCodexOverrideCommand(processEnv, params.overrideEnvVarKeys ?? [], cwd)
         ?? requireProviderCliCommand('codex', { processEnv });
