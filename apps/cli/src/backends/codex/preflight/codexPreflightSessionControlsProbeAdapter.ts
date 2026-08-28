@@ -19,7 +19,7 @@ async function buildCodexProbeProcessEnv(params: Readonly<{
     credentials?: Credentials | null;
     processEnv?: NodeJS.ProcessEnv;
 }>): Promise<NodeJS.ProcessEnv> {
-    const processEnv: NodeJS.ProcessEnv = {
+    let processEnv: NodeJS.ProcessEnv = {
         ...(params.processEnv ?? process.env),
     };
     const profileId = typeof params.profileId === 'string' ? params.profileId.trim() : '';
@@ -32,22 +32,31 @@ async function buildCodexProbeProcessEnv(params: Readonly<{
             throw new Error(`Cannot probe Codex profile "${profileId}" without credentials.`);
         }
 
-        const { customProfiles } = readProfilesFromAccountSettings(params.accountSettings);
+        const { customProfiles, secretBindingsByProfileId } = readProfilesFromAccountSettings(params.accountSettings);
         const profile = resolveProfileForAgent({
             agentId: 'codex',
             query: profileId,
             customProfiles,
         });
+        const profileProcessEnv = { ...processEnv };
+        const profileBindings = secretBindingsByProfileId[profile.id] ?? {};
+        for (const requirement of profile.envVarRequirements ?? []) {
+            if ((requirement.kind ?? 'secret') !== 'secret') continue;
+            const boundSecretId = profileBindings[requirement.name];
+            if (typeof boundSecretId === 'string' && boundSecretId.trim().length > 0) {
+                delete profileProcessEnv[requirement.name];
+            }
+        }
         const profileEnv = await buildProfileEnvOverlay({
             agentId: 'codex',
             profile,
             accountSettings: params.accountSettings,
             credentials: params.credentials,
-            processEnv,
+            processEnv: profileProcessEnv,
             promptSecretFn: null,
             startedBy: 'daemon',
         });
-        Object.assign(processEnv, profileEnv.envOverlayExpanded);
+        processEnv = { ...profileProcessEnv, ...profileEnv.envOverlayExpanded };
         if (Object.hasOwn(profileEnv.envOverlayExpanded, 'OPENROUTER_API_KEY')) {
             markCodexOpenRouterProfileRequested(processEnv);
             const configuration = await inspectCodexOpenRouterMachineConfiguration({ processEnv });

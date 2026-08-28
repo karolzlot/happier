@@ -158,7 +158,7 @@ describe('codexPreflightSessionControlsProbeAdapter', () => {
         });
     });
 
-    it('materializes the selected profile saved secret before spawning Codex app-server', async () => {
+    it('uses the selected saved secret instead of an ambient value before spawning Codex app-server', async () => {
         tempDir = makeTempDir('happier-codex-preflight-profile-');
         const codexHome = join(tempDir, 'codex-home');
         writeReadyOpenRouterProfile(codexHome);
@@ -209,7 +209,7 @@ describe('codexPreflightSessionControlsProbeAdapter', () => {
             processEnv: {
                 ...process.env,
                 CODEX_HOME: codexHome,
-                OPENROUTER_API_KEY: undefined,
+                OPENROUTER_API_KEY: 'ambient-openrouter-key-that-must-not-be-used',
             },
         });
 
