@@ -81,6 +81,19 @@ describe('sessionHandoffCoordinator', () => {
     ]);
   });
 
+  it('uses an explicitly selected target directory instead of the source-derived path', async () => {
+    const { coordinator, port, update } = createHarness();
+
+    await (await coordinator.admit({ ...baseInput, targetPath: '/home/guest/workspace' })).execute({ update });
+
+    expect(port.prepareTarget).toHaveBeenCalledWith(expect.objectContaining({
+      targetPath: '/home/guest/workspace',
+    }));
+    expect(port.startSource).toHaveBeenCalledWith(expect.not.objectContaining({
+      targetPath: expect.anything(),
+    }));
+  });
+
   it('aborts the admitted handoff when target preparation fails and normalizes the domain failure', async () => {
     const { coordinator, port, update } = createHarness({
       prepareTarget: vi.fn(async () => ({ ok: false, errorCode: 'target_prepare_failed', error: { message: 'nested detail' } })),
@@ -90,6 +103,36 @@ describe('sessionHandoffCoordinator', () => {
     expect(port.abortTarget).toHaveBeenCalledWith(expect.objectContaining({ handoffId: 'handoff-1' }));
     expect(port.abortSource).toHaveBeenCalledWith(expect.objectContaining({ handoffId: 'handoff-1' }));
     expect(port.resumeTarget).not.toHaveBeenCalled();
+  });
+
+  it('does not confirm or rebind a handoff when the target already runs the session', async () => {
+    const { coordinator, port, update } = createHarness({
+      resumeTarget: vi.fn(async () => ({
+        handoffId: 'handoff-1',
+        sessionId: 'session-1',
+        disposition: 'preexisting_or_adopted' as const,
+      })),
+    });
+
+    const result = await (await coordinator.admit(baseInput)).execute({ update });
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'target_session_already_running',
+      error: 'This session is already running on the selected target',
+    });
+    expect(port.confirmTarget).not.toHaveBeenCalled();
+    expect(port.bindTarget).not.toHaveBeenCalled();
+    expect(port.commitTarget).not.toHaveBeenCalled();
+    expect(port.abortTarget).toHaveBeenCalledWith({
+      handoffId: 'handoff-1',
+      sessionId: 'session-1',
+      reason: 'target_session_already_running',
+    });
+    expect(port.abortSource).toHaveBeenCalledWith({
+      handoffId: 'handoff-1',
+      reason: 'target_session_already_running',
+    });
   });
 
   it('fails and aborts the staged handoff when the authoritative target status is not found after prepare acceptance', async () => {

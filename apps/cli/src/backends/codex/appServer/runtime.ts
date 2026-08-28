@@ -4333,6 +4333,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         activeThreadId: string,
         options?: Readonly<{
             localId?: string | null;
+            userMessageSeq?: number | null;
             providerPrompt?: CodexAppServerPendingProviderPrompt | null;
         }>,
     ): Promise<PendingTurn> => {
@@ -4363,6 +4364,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
         await turnBoundaryTracker.beginTurn({
             turnId: null,
             startUserMessageLocalId: options?.localId ?? null,
+            startUserMessageSeq: options?.userMessageSeq ?? null,
             startSeqInclusive: pendingTurnStartSeqInclusive,
         });
         return activeTurn;
@@ -4781,6 +4783,7 @@ export function createCodexAppServerRuntime(params: Readonly<{
                 const pendingProviderPrompt = trackPendingProviderPrompt(promptForAttempt, optionsForAttempt);
                 const activeTurn = await beginPendingTurnForThread(activeThreadId, {
                     localId: optionsForAttempt?.localId ?? null,
+                    userMessageSeq: optionsForAttempt?.userMessageSeq ?? null,
                     providerPrompt: pendingProviderPrompt,
                 });
                 try {
