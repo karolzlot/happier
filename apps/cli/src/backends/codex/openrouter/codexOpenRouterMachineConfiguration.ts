@@ -4,6 +4,8 @@ import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/pro
 import { join, resolve as resolvePath } from 'node:path';
 import { URL } from 'node:url';
 
+import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
+
 import { resolveCodexCliInvocation } from '../utils/resolveCodexCliInvocation';
 import { resolveConfiguredCodexHome } from '../utils/resolveConfiguredCodexHome';
 import {
@@ -548,14 +550,21 @@ async function runCodexVersion(processEnv: NodeJS.ProcessEnv): Promise<string> {
       'Codex CLI nie jest dostępny na tej maszynie.',
     );
   }
+  const versionInvocation = resolveWindowsCommandInvocation({
+    command: invocation.command,
+    args: invocation.args,
+    env: versionProcessEnv,
+    resolveCommandOnPath: true,
+  });
   const output = await new Promise<string>((resolve, reject) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const child = spawn(invocation.command, invocation.args, {
+    const child = spawn(versionInvocation.command, versionInvocation.args, {
       env: versionProcessEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      windowsVerbatimArguments: versionInvocation.windowsVerbatimArguments,
     });
     const settle = (callback: () => void): void => {
       if (settled) return;

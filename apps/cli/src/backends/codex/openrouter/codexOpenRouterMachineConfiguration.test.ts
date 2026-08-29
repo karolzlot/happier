@@ -1,4 +1,4 @@
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -104,6 +104,54 @@ describe('Codex OpenRouter machine configuration', () => {
     expect(catalog.models[0].default_reasoning_level).toBe('max');
     expect(catalog.models[0].supported_reasoning_levels).toEqual([{ effort: 'max' }]);
     expect(catalog.models.map((model: { priority: number }) => model.priority)).toEqual([0, 1]);
+  });
+
+  it.skipIf(process.platform !== 'win32')('runs an npm-style Codex .cmd shim when reading its version', async () => {
+    const codexHome = await createCodexHome();
+    const binDir = join(codexHome, 'bin');
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      join(binDir, 'codex.cmd'),
+      '@echo off\r\necho codex-cli 0.149.1\r\n',
+      'utf8',
+    );
+
+    const processEnv: NodeJS.ProcessEnv = {
+      CODEX_HOME: codexHome,
+      HAPPIER_HOME_DIR: join(codexHome, 'happier-home'),
+      PATH: binDir,
+      PATHEXT: '.CMD;.EXE',
+      ComSpec: process.env.ComSpec,
+      SystemRoot: process.env.SystemRoot,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+      USERPROFILE: process.env.USERPROFILE,
+    };
+    let observedCodexCatalogRequest = false;
+
+    await expect(
+      configureCodexOpenRouterMachine({
+        processEnv,
+        fetchImpl: async (url) => {
+          if (url.includes('client_version=')) {
+            observedCodexCatalogRequest = url.includes('client_version=0.149.1');
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({ models: [codexModel('free/model')] }),
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: [{ id: 'free/model', created: 1, pricing: { prompt: 0, completion: 0 } }],
+            }),
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ state: 'ready', modelCount: 1 });
+    expect(observedCodexCatalogRequest).toBe(true);
   });
 
   it('defaults a free model to its highest published effort', () => {
